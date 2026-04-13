@@ -1,0 +1,12 @@
+{
+  "name": "vercel-ai-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "check": "node --check api/chat.js"
+  },
+  "dependencies": {
+    "openai": "^6"
+  }
+}
