@@ -1,6 +1,6 @@
 # Vercel AI Backend
 
-Backend serverless ini dipakai untuk memanggil OpenAI dari sisi server agar API key tidak pernah muncul di browser.
+Backend serverless ini dipakai untuk memanggil OpenRouter dari sisi server agar API key tidak pernah muncul di browser.
 
 ## Struktur
 
@@ -15,12 +15,20 @@ vercel-ai-backend/
 
 ## Environment Variables
 
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
-  Default: `gpt-5-mini`
+- `OPENROUTER_API_KEY`
+- `OPENROUTER_MODEL`
+  Default: `openrouter/auto`
+- `OPENROUTER_SITE_URL`
+  Disarankan isi URL situs GitHub Pages Anda untuk header `HTTP-Referer`.
+- `OPENROUTER_APP_NAME`
+  Default lokal: `TOGA RT 09`
 - `ALLOWED_ORIGINS`
   Pisahkan dengan koma, contoh:
-  `https://taqinjunior56.github.io,https://taqinjunior56.github.io/ai-web`
+  `https://taqinjunior56.github.io,https://taqinjunior56.github.io/ai-web,http://localhost:4173,http://127.0.0.1:4173`
+
+Catatan:
+- Backend ini juga otomatis mengizinkan origin lokal umum seperti `http://localhost:4173`, `http://localhost:5173`, `http://127.0.0.1:4173`, dan `http://127.0.0.1:5173`.
+- Untuk preview lokal, tetap aman jika `ALLOWED_ORIGINS` Anda juga memuat origin yang benar-benar dipakai browser.
 
 ## Local Check
 
@@ -34,8 +42,13 @@ npm run check
 
 1. Buat repo baru untuk folder ini atau push sebagai folder terpisah.
 2. Import repo ke Vercel.
-3. Tambahkan environment variables dari `.env.example`.
-4. Deploy.
+3. Tambahkan environment variables baru:
+   - `OPENROUTER_API_KEY`
+   - `OPENROUTER_MODEL`
+   - `OPENROUTER_SITE_URL`
+   - `OPENROUTER_APP_NAME`
+   - `ALLOWED_ORIGINS`
+4. Deploy atau redeploy setelah env diubah.
 
 ## Endpoint
 
@@ -58,7 +71,8 @@ Respons:
 ```json
 {
   "reply": "Halo, ada yang bisa saya bantu?",
-  "model": "gpt-5-mini"
+  "model": "openrouter/auto",
+  "provider": "openrouter"
 }
 ```
 
@@ -79,3 +93,7 @@ const response = await fetch("https://YOUR-VERCEL-APP.vercel.app/api/chat", {
 const data = await response.json();
 console.log(data.reply);
 ```
+
+## Catatan Model Gratis
+
+OpenRouter menyediakan model gratis, tetapi daftar dan ketersediaannya bisa berubah. Untuk awal yang stabil, gunakan `OPENROUTER_MODEL=openrouter/auto`, lalu jika sudah menentukan model gratis yang aktif di akun Anda, ganti nilainya di environment Vercel tanpa perlu mengubah frontend.

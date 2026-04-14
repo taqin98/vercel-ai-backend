@@ -5,8 +5,5 @@
   "private": true,
   "scripts": {
     "check": "node --check api/chat.js"
-  },
-  "dependencies": {
-    "openai": "^6"
   }
 }
