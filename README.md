@@ -17,7 +17,7 @@ vercel-ai-backend/
 
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_MODEL`
-  Default: `openrouter/auto`
+  Default: `openrouter/free`
 - `OPENROUTER_SITE_URL`
   Disarankan isi URL situs GitHub Pages Anda untuk header `HTTP-Referer`.
 - `OPENROUTER_APP_NAME`
@@ -71,7 +71,7 @@ Respons:
 ```json
 {
   "reply": "Halo, ada yang bisa saya bantu?",
-  "model": "openrouter/auto",
+  "model": "openrouter/free",
   "provider": "openrouter"
 }
 ```
@@ -96,4 +96,4 @@ console.log(data.reply);
 
 ## Catatan Model Gratis
 
-OpenRouter menyediakan model gratis, tetapi daftar dan ketersediaannya bisa berubah. Untuk awal yang stabil, gunakan `OPENROUTER_MODEL=openrouter/auto`, lalu jika sudah menentukan model gratis yang aktif di akun Anda, ganti nilainya di environment Vercel tanpa perlu mengubah frontend.
+OpenRouter menyediakan model gratis, tetapi daftar dan ketersediaannya bisa berubah. Untuk awal yang sederhana, gunakan `OPENROUTER_MODEL=openrouter/free`, lalu jika Anda ingin model gratis spesifik yang sedang aktif, ganti nilainya di environment Vercel tanpa perlu mengubah frontend.

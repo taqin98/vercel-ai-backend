@@ -1,8 +1,10 @@
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || "openrouter/auto";
+const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
 const MAX_HISTORY_ITEMS = 10;
 const MAX_CONTENT_LENGTH = 4000;
 const MAX_CONTEXT_ITEMS = 6;
+const OPENROUTER_TIMEOUT_MS = 18000;
+const MAX_OUTPUT_TOKENS = 500;
 const DEFAULT_LOCAL_ORIGINS = [
   "http://localhost",
   "http://localhost:3000",
@@ -266,13 +268,21 @@ function extractReplyText(payload) {
 }
 
 async function sendOpenRouterChat(messages, origin) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
+
   const response = await fetch(OPENROUTER_API_URL, {
     method: "POST",
     headers: buildOpenRouterHeaders(origin),
+    signal: controller.signal,
     body: JSON.stringify({
       model: DEFAULT_MODEL,
       messages,
+      max_tokens: MAX_OUTPUT_TOKENS,
+      temperature: 0.5,
     }),
+  }).finally(() => {
+    clearTimeout(timer);
   });
 
   const data = await response.json().catch(() => null);
@@ -342,9 +352,17 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error("OpenRouter error:", error);
 
-    return res.status(error?.status || 500).json({
-      error: "Terjadi kesalahan di server.",
-      detail: error?.message || "Unknown error",
+    const isAbortError =
+      error?.name === "AbortError" ||
+      /aborted|timeout/i.test(String(error?.message || ""));
+
+    return res.status(error?.status || (isAbortError ? 504 : 500)).json({
+      error: isAbortError
+        ? "Backend kehabisan waktu saat menunggu OpenRouter."
+        : "Terjadi kesalahan di server.",
+      detail: isAbortError
+        ? `OpenRouter tidak merespons dalam ${OPENROUTER_TIMEOUT_MS} ms.`
+        : error?.message || "Unknown error",
       provider: "openrouter",
     });
   }
