@@ -175,9 +175,21 @@ function sanitizeKnowledgeBase(base) {
   return {
     source: sanitizeContent(base.source),
     note: sanitizeContent(base.note),
+    matchType: sanitizeContent(base.matchType),
+    matchReason: sanitizeContent(base.matchReason),
     totalItems: Number.isFinite(Number(base.totalItems))
       ? Number(base.totalItems)
       : undefined,
+    availableFields: sanitizeContextList(
+      base.availableFields,
+      sanitizeContent,
+      MAX_CONTEXT_FIELDS
+    ),
+    queryTerms: sanitizeContextList(
+      base.queryTerms,
+      sanitizeContent,
+      MAX_CONTEXT_FIELDS
+    ),
     columns: sanitizeContextList(
       base.columns,
       sanitizeContent,
@@ -192,6 +204,7 @@ function sanitizeKnowledgeBase(base) {
       sanitizePlantContextItem,
       MAX_KNOWLEDGE_ITEMS
     ),
+    matchedItem: sanitizePlantContextItem(base.matchedItem),
   };
 }
 
@@ -558,6 +571,12 @@ function buildQueryTerms(message, context) {
   );
 }
 
+function hasWholeWord(text, phrase) {
+  if (!text || !phrase) return false;
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|\\s)${escaped}(\\s|$)`, "i").test(text);
+}
+
 function scoreKnowledgeItem(item, queryTerms, context) {
   const currentName = normalizeText(context?.currentItem?.nama || "");
   const currentLatin = normalizeText(context?.currentItem?.nama_latin || "");
@@ -580,6 +599,76 @@ function scoreKnowledgeItem(item, queryTerms, context) {
   if (selectedJenis && itemJenis && itemJenis === selectedJenis) score += 4;
 
   return score;
+}
+
+function detectKnowledgeMatch(items, message, context, queryTerms) {
+  const normalizedMessage = normalizeText(message);
+  const currentName = normalizeText(context?.currentItem?.nama || "");
+  const currentLatin = normalizeText(context?.currentItem?.nama_latin || "");
+
+  for (const item of items) {
+    const nama = normalizeText(item.nama);
+    const latin = normalizeText(item.nama_latin);
+
+    if (
+      (nama && hasWholeWord(normalizedMessage, nama)) ||
+      (latin && hasWholeWord(normalizedMessage, latin))
+    ) {
+      return {
+        item,
+        matchType: "exact-name",
+        matchReason:
+          "Nama tanaman yang ditanyakan user cocok langsung dengan item pada dataset.",
+      };
+    }
+  }
+
+  if (currentName || currentLatin) {
+    for (const item of items) {
+      const nama = normalizeText(item.nama);
+      const latin = normalizeText(item.nama_latin);
+
+      if (
+        (currentName && nama === currentName) ||
+        (currentLatin && latin && latin === currentLatin)
+      ) {
+        return {
+          item,
+          matchType: "page-focus",
+          matchReason:
+            "Item pada dataset cocok dengan tanaman yang sedang aktif pada halaman.",
+        };
+      }
+    }
+  }
+
+  const scored = items
+    .map((item) => ({
+      item,
+      score: scoreKnowledgeItem(item, queryTerms, context),
+    }))
+    .sort((a, b) => b.score - a.score || a.item.nama.localeCompare(b.item.nama));
+
+  const best = scored[0];
+  if (best && best.score > 0) {
+    return {
+      item: best.item,
+      matchType: "semantic-top",
+      matchReason:
+        "Item ini memiliki kecocokan istilah tertinggi terhadap pertanyaan user dan konteks halaman.",
+    };
+  }
+
+  return {
+    item: null,
+    matchType: "none",
+    matchReason:
+      "Tidak ada item dataset yang benar-benar cocok dengan pertanyaan user.",
+  };
+}
+
+function getAvailableFields(item) {
+  return Object.keys(item?.fields || {}).slice(0, MAX_CONTEXT_FIELDS);
 }
 
 function summarizeKnowledgeItem(item) {
@@ -610,14 +699,29 @@ function pickKnowledgeItems(items, message, context) {
 
 async function buildKnowledgeBase(message, context, dataSource) {
   const dataset = await loadKnowledgeDataset(dataSource);
+  const queryTerms = buildQueryTerms(message, context);
+  const pickedItems = pickKnowledgeItems(dataset, message, context);
+  const pickedSummaryItems = pickedItems.map((item) => ({
+    ...item,
+    searchText: undefined,
+  }));
+  const detectedMatch = detectKnowledgeMatch(dataset, message, context, queryTerms);
+  const matchedItemSummary = detectedMatch.item
+    ? summarizeKnowledgeItem(detectedMatch.item)
+    : null;
 
   return sanitizeKnowledgeBase({
     source: dataSource.url,
     note: "Knowledge base ini diambil backend langsung dari API sumber data situs. Jawaban harus berdasarkan data ini. Jika informasi tidak ada di sini, katakan tidak ditemukan pada dataset situs.",
+    matchType: detectedMatch.matchType,
+    matchReason: detectedMatch.matchReason,
     totalItems: dataset.length,
+    availableFields: getAvailableFields(detectedMatch.item || pickedItems[0]),
+    queryTerms,
     columns: buildKnowledgeColumns(dataset),
     jenisSummary: buildJenisSummary(dataset),
-    items: pickKnowledgeItems(dataset, message, context),
+    items: pickedSummaryItems,
+    matchedItem: matchedItemSummary,
   });
 }
 
@@ -625,7 +729,7 @@ function buildSystemPrompt(context) {
   const basePrompt =
     "Kamu adalah asisten AI untuk website TOGA. Jawab dalam Bahasa Indonesia, ringkas, jelas, aman, dan membantu. Jika pertanyaan berkaitan dengan kesehatan, jangan memberi diagnosis pasti, jangan menggantikan tenaga kesehatan, dan sarankan pemeriksaan medis saat gejala berat, mendadak, berkepanjangan, atau berbahaya.";
   const knowledgePrompt =
-    "Jika knowledgeBase tersedia, gunakan hanya knowledgeBase sebagai sumber fakta utama. Jangan mengarang. Jangan menambah data di luar dataset situs. Knowledge base lebih prioritas daripada konteks halaman umum atau data dummy. Jika informasi yang diminta tidak ada di knowledgeBase, jawab terus terang bahwa data tersebut tidak ditemukan pada dataset situs.";
+    "Jika knowledgeBase tersedia, gunakan knowledgeBase sebagai sumber fakta utama. Jangan mengarang. Jangan menambah data di luar dataset situs. Knowledge base lebih prioritas daripada konteks halaman umum atau data dummy. Kecocokan `matchedItem`, `matchType`, `availableFields`, dan `knowledgeBase.items` harus dipakai untuk menyusun jawaban. Jika `matchedItem` ada, jawab berdasarkan item itu dan jangan bilang data tidak ditemukan. Jika data kurang lengkap, katakan bahwa dataset hanya memuat field yang tersedia. Hanya bila `matchType` adalah `none` dan kandidat knowledgeBase memang tidak relevan, barulah katakan data tidak ditemukan pada dataset situs.";
 
   if (!context) return basePrompt;
   if (!context.page && context.knowledgeBase?.items?.length) {
@@ -670,18 +774,25 @@ function findExactKnowledgeMatch(message, context) {
 }
 
 function buildKnowledgeInstructionMessage(message, context) {
-  const items = Array.isArray(context?.knowledgeBase?.items)
-    ? context.knowledgeBase.items
+  const knowledgeBase = context?.knowledgeBase || null;
+  const items = Array.isArray(knowledgeBase?.items) ? knowledgeBase.items : [];
+  const matchedItem = knowledgeBase?.matchedItem || null;
+  const matchType = sanitizeContent(knowledgeBase?.matchType || "");
+  const matchReason = sanitizeContent(knowledgeBase?.matchReason || "");
+  const availableFields = Array.isArray(knowledgeBase?.availableFields)
+    ? knowledgeBase.availableFields
     : [];
 
   if (items.length === 0) return null;
 
-  const exactMatch = findExactKnowledgeMatch(message, context);
+  const exactMatch = matchedItem || findExactKnowledgeMatch(message, context);
 
   if (exactMatch) {
     return {
       role: "system",
-      content: `Untuk pertanyaan user ini, item yang ditanyakan SUDAH DITEMUKAN di knowledgeBase situs. Jangan jawab bahwa item tersebut tidak ditemukan. Gunakan data item berikut sebagai rujukan utama:\n${JSON.stringify(
+      content: `Untuk pertanyaan user ini, item yang ditanyakan SUDAH DITEMUKAN di knowledgeBase situs. Prioritaskan item ini dibanding konteks halaman lain. Jangan jawab bahwa item tersebut tidak ditemukan. matchType=${matchType || "exact"}; alasan=${matchReason || "item cocok dengan pertanyaan user"}; field tersedia=${JSON.stringify(
+        availableFields
+      )}. Gunakan data item berikut sebagai rujukan utama:\n${JSON.stringify(
         exactMatch
       )}`,
     };
@@ -689,13 +800,26 @@ function buildKnowledgeInstructionMessage(message, context) {
 
   return {
     role: "system",
-    content: `Gunakan item-item knowledgeBase berikut sebagai kandidat utama jawaban. Jika salah satu item relevan, jelaskan berdasarkan field item itu dan jangan bilang data tidak ditemukan:\n${JSON.stringify(
+    content: `Gunakan item-item knowledgeBase berikut sebagai kandidat utama jawaban. matchType=${matchType || "unknown"}; alasan=${matchReason || "-"}; field utama yang tersedia=${JSON.stringify(
+      availableFields
+    )}. Knowledge base lebih prioritas daripada konteks halaman. Jika salah satu item relevan, jelaskan berdasarkan field item itu dan jangan bilang data tidak ditemukan:\n${JSON.stringify(
       items
     )}`,
   };
 }
 
-function buildContextMessage(context) {
+function buildKnowledgeContextMessage(context) {
+  if (!context?.knowledgeBase) return null;
+
+  return {
+    role: "system",
+    content: `Knowledge base utama untuk pertanyaan ini:\n${JSON.stringify(
+      context.knowledgeBase
+    )}`,
+  };
+}
+
+function buildPageContextMessage(context) {
   if (!context || typeof context !== "object") return null;
 
   const compact = {
@@ -710,12 +834,19 @@ function buildContextMessage(context) {
     currentItem: context.currentItem,
     visibleItems: context.visibleItems,
     remedies: context.remedies,
-    knowledgeBase: context.knowledgeBase,
   };
+
+  const hasMeaningfulPageContext = Object.values(compact).some((value) =>
+    Array.isArray(value)
+      ? value.length > 0
+      : value !== null && value !== undefined && value !== ""
+  );
+
+  if (!hasMeaningfulPageContext) return null;
 
   return {
     role: "system",
-    content: `Gunakan konteks halaman berikut bila relevan:\n${JSON.stringify(
+    content: `Konteks halaman berikut hanya pelengkap UI dan bersifat sekunder. Gunakan hanya jika konsisten dengan knowledgeBase:\n${JSON.stringify(
       compact
     )}`,
   };
@@ -726,7 +857,8 @@ function buildMessages(message, history, context) {
     message,
     context
   );
-  const contextMessage = buildContextMessage(context);
+  const knowledgeContextMessage = buildKnowledgeContextMessage(context);
+  const pageContextMessage = buildPageContextMessage(context);
 
   return [
     {
@@ -734,7 +866,8 @@ function buildMessages(message, history, context) {
       content: buildSystemPrompt(context),
     },
     ...(knowledgeInstructionMessage ? [knowledgeInstructionMessage] : []),
-    ...(contextMessage ? [contextMessage] : []),
+    ...(knowledgeContextMessage ? [knowledgeContextMessage] : []),
+    ...(pageContextMessage ? [pageContextMessage] : []),
     ...history,
     {
       role: "user",
