@@ -1,8 +1,15 @@
+import { isIP } from "node:net";
+
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
 const MAX_HISTORY_ITEMS = 10;
 const MAX_CONTENT_LENGTH = 4000;
 const MAX_CONTEXT_ITEMS = 6;
+const MAX_KNOWLEDGE_ITEMS = 8;
+const MAX_CONTEXT_FIELDS = 24;
+const MAX_DATASET_FIELD_ITEMS = 8;
+const DATA_SOURCE_TIMEOUT_MS = 12000;
+const DATA_SOURCE_CACHE_TTL_MS = 10 * 60 * 1000;
 const OPENROUTER_TIMEOUT_MS = 18000;
 const MAX_OUTPUT_TOKENS = 500;
 const DEFAULT_LOCAL_ORIGINS = [
@@ -15,6 +22,7 @@ const DEFAULT_LOCAL_ORIGINS = [
   "http://127.0.0.1:4173",
   "http://127.0.0.1:5173",
 ];
+const DATASET_CACHE = new Map();
 
 function parseAllowedOrigins(rawValue) {
   const configuredOrigins = String(rawValue || "")
@@ -25,7 +33,25 @@ function parseAllowedOrigins(rawValue) {
   return new Set([...DEFAULT_LOCAL_ORIGINS, ...configuredOrigins]);
 }
 
+function parseAllowedDataSourceKeys(rawValue) {
+  return new Set(
+    String(rawValue || "")
+      .split(",")
+      .map((item) => getDataSourceKey(item))
+      .filter(Boolean)
+  );
+}
+
 const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
+const ALLOWED_DATA_SOURCE_KEYS = parseAllowedDataSourceKeys(
+  process.env.ALLOWED_DATA_SOURCE_URLS
+);
+
+function createHttpError(message, status = 500) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
 
 function setCorsHeaders(req, res) {
   const origin = req.headers.origin || "";
@@ -64,9 +90,36 @@ function sanitizeHistory(history) {
     .filter((item) => item.content);
 }
 
-function sanitizeContextList(list, itemSanitizer) {
+function sanitizeContextList(list, itemSanitizer, limit = MAX_CONTEXT_ITEMS) {
   if (!Array.isArray(list)) return [];
-  return list.slice(0, MAX_CONTEXT_ITEMS).map(itemSanitizer).filter(Boolean);
+  return list.slice(0, limit).map(itemSanitizer).filter(Boolean);
+}
+
+function sanitizeFieldValue(value) {
+  if (Array.isArray(value)) {
+    return sanitizeContextList(value, sanitizeContent, MAX_DATASET_FIELD_ITEMS);
+  }
+
+  return sanitizeContent(value);
+}
+
+function sanitizeFieldMap(fields) {
+  if (!fields || typeof fields !== "object") return {};
+
+  return Object.entries(fields)
+    .slice(0, MAX_CONTEXT_FIELDS)
+    .reduce((acc, [key, value]) => {
+      const safeKey = sanitizeContent(key);
+      if (!safeKey) return acc;
+
+      const safeValue = sanitizeFieldValue(value);
+      const isEmptyArray = Array.isArray(safeValue) && safeValue.length === 0;
+
+      if (!safeValue || isEmptyArray) return acc;
+
+      acc[safeKey] = safeValue;
+      return acc;
+    }, {});
 }
 
 function sanitizePlantContextItem(item) {
@@ -79,6 +132,7 @@ function sanitizePlantContextItem(item) {
     manfaat: sanitizeContextList(item.manfaat, sanitizeContent),
     catatan: sanitizeContextList(item.catatan, sanitizeContent),
     deskripsi: sanitizeContent(item.deskripsi),
+    fields: sanitizeFieldMap(item.fields),
   };
 }
 
@@ -104,6 +158,40 @@ function sanitizeRemedyContextItem(item) {
     ringkas: sanitizeContent(item.ringkas),
     langkah: sanitizeContextList(item.langkah, sanitizeContent),
     perhatian: sanitizeContent(item.perhatian),
+  };
+}
+
+function sanitizeKnowledgeTypeItem(item) {
+  if (!item || typeof item !== "object") return null;
+  return {
+    jenis: sanitizeContent(item.jenis),
+    jumlah: Number.isFinite(Number(item.jumlah)) ? Number(item.jumlah) : 0,
+  };
+}
+
+function sanitizeKnowledgeBase(base) {
+  if (!base || typeof base !== "object") return null;
+
+  return {
+    source: sanitizeContent(base.source),
+    note: sanitizeContent(base.note),
+    totalItems: Number.isFinite(Number(base.totalItems))
+      ? Number(base.totalItems)
+      : undefined,
+    columns: sanitizeContextList(
+      base.columns,
+      sanitizeContent,
+      MAX_CONTEXT_FIELDS
+    ),
+    jenisSummary: sanitizeContextList(
+      base.jenisSummary,
+      sanitizeKnowledgeTypeItem
+    ),
+    items: sanitizeContextList(
+      base.items,
+      sanitizePlantContextItem,
+      MAX_KNOWLEDGE_ITEMS
+    ),
   };
 }
 
@@ -151,31 +239,464 @@ function sanitizeContext(context) {
   };
 }
 
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeDatasetScalar(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value.trim().slice(0, MAX_CONTENT_LENGTH);
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value).trim().slice(0, MAX_CONTENT_LENGTH);
+  }
+
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value).slice(0, MAX_CONTENT_LENGTH);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  return "";
+}
+
+function normalizeDatasetFieldValue(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => normalizeDatasetScalar(item))
+      .filter(Boolean)
+      .slice(0, MAX_DATASET_FIELD_ITEMS);
+  }
+
+  return normalizeDatasetScalar(value);
+}
+
+function collectDatasetFields(raw) {
+  if (!raw || typeof raw !== "object") return {};
+
+  return Object.entries(raw)
+    .slice(0, MAX_CONTEXT_FIELDS)
+    .reduce((acc, [key, value]) => {
+      const safeKey = sanitizeContent(String(key || ""));
+      if (!safeKey) return acc;
+
+      const normalizedValue = normalizeDatasetFieldValue(value);
+      const isEmptyArray =
+        Array.isArray(normalizedValue) && normalizedValue.length === 0;
+
+      if (!normalizedValue || isEmptyArray) return acc;
+
+      acc[safeKey] = normalizedValue;
+      return acc;
+    }, {});
+}
+
+function getFirstFieldValue(raw, keys) {
+  if (!raw || typeof raw !== "object") return "";
+
+  for (const key of keys) {
+    const value = normalizeDatasetScalar(raw[key]);
+    if (value) return value;
+  }
+
+  return "";
+}
+
+function flattenFieldMap(fields) {
+  return Object.entries(fields || {}).flatMap(([key, value]) =>
+    Array.isArray(value) ? [key, ...value] : [key, value]
+  );
+}
+
+function normalizeKnowledgeItem(raw, index) {
+  if (!raw || typeof raw !== "object") return null;
+
+  const fields = collectDatasetFields(raw);
+  if (Object.keys(fields).length === 0) return null;
+
+  const id =
+    getFirstFieldValue(raw, ["id", "slug", "kode", "code"]) ||
+    `item-${index + 1}`;
+  const nama = getFirstFieldValue(raw, ["nama", "judul", "title", "name"]);
+  const namaLatin = getFirstFieldValue(raw, [
+    "nama_latin",
+    "latin",
+    "namaLatin",
+  ]);
+  const jenis = getFirstFieldValue(raw, ["jenis", "kategori", "category"]);
+  const deskripsi = getFirstFieldValue(raw, [
+    "deskripsi",
+    "ringkas",
+    "desc",
+    "description",
+  ]);
+
+  return {
+    id,
+    nama: nama || id,
+    nama_latin: namaLatin,
+    jenis,
+    deskripsi,
+    manfaat: Array.isArray(fields.manfaat) ? fields.manfaat : [],
+    catatan: Array.isArray(fields.catatan) ? fields.catatan : [],
+    fields,
+    searchText: normalizeText(flattenFieldMap(fields).join(" ")),
+  };
+}
+
+function normalizeKnowledgeDataset(data) {
+  if (Array.isArray(data)) {
+    return data.map(normalizeKnowledgeItem).filter(Boolean);
+  }
+
+  if (data && typeof data === "object" && Array.isArray(data.data)) {
+    return data.data.map(normalizeKnowledgeItem).filter(Boolean);
+  }
+
+  if (data && typeof data === "object") {
+    return Object.values(data).map(normalizeKnowledgeItem).filter(Boolean);
+  }
+
+  return [];
+}
+
+function getDataSourceKey(rawUrl) {
+  try {
+    const url = new URL(String(rawUrl || "").trim());
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
+  } catch (_) {
+    return "";
+  }
+}
+
+function isPrivateHostname(hostname) {
+  const normalized = String(hostname || "").toLowerCase();
+  if (!normalized) return true;
+  if (normalized === "localhost" || normalized.endsWith(".local")) return true;
+
+  const version = isIP(normalized);
+  if (!version) return false;
+
+  if (version === 4) {
+    const [a, b] = normalized.split(".").map((part) => Number(part));
+    if (a === 10 || a === 127) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    return false;
+  }
+
+  return (
+    normalized === "::1" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("fe80")
+  );
+}
+
+function normalizeDataSourceUrl(rawUrl) {
+  const value = sanitizeContent(rawUrl);
+  if (!value) return "";
+
+  let url;
+  try {
+    url = new URL(value);
+  } catch (_) {
+    throw createHttpError("URL sumber data AI tidak valid.", 400);
+  }
+
+  if (url.protocol !== "https:") {
+    throw createHttpError("Sumber data AI harus memakai HTTPS.", 400);
+  }
+
+  if (isPrivateHostname(url.hostname)) {
+    throw createHttpError(
+      "Sumber data AI tidak boleh mengarah ke host lokal atau private network.",
+      400
+    );
+  }
+
+  const key = getDataSourceKey(url.toString());
+  if (
+    ALLOWED_DATA_SOURCE_KEYS.size > 0 &&
+    key &&
+    !ALLOWED_DATA_SOURCE_KEYS.has(key)
+  ) {
+    throw createHttpError("Sumber data AI tidak diizinkan.", 403);
+  }
+
+  url.searchParams.set("mode", "list");
+  return url.toString();
+}
+
+function sanitizeDataSource(dataSource) {
+  if (!dataSource || typeof dataSource !== "object") return null;
+
+  const url = normalizeDataSourceUrl(dataSource.url);
+  if (!url) return null;
+
+  return {
+    url,
+    mode: "list",
+  };
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = DATA_SOURCE_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+    });
+
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw createHttpError(
+        data?.error ||
+          data?.message ||
+          `Gagal mengambil dataset AI dari sumber data (HTTP ${response.status}).`,
+        502
+      );
+    }
+
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw createHttpError(
+        `Sumber data AI tidak merespons dalam ${timeoutMs} ms.`,
+        504
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function loadKnowledgeDataset(dataSource) {
+  if (!dataSource?.url) return [];
+
+  const now = Date.now();
+  const cached = DATASET_CACHE.get(dataSource.url);
+  if (cached && now - cached.ts <= DATA_SOURCE_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const payload = await fetchJsonWithTimeout(dataSource.url);
+  const dataset = normalizeKnowledgeDataset(payload);
+
+  if (dataset.length === 0) {
+    throw createHttpError(
+      "Dataset AI berhasil diambil, tetapi tidak ada record yang bisa dipakai.",
+      502
+    );
+  }
+
+  DATASET_CACHE.set(dataSource.url, {
+    ts: now,
+    data: dataset,
+  });
+
+  return dataset;
+}
+
+function buildJenisSummary(items) {
+  const counts = new Map();
+
+  items.forEach((item) => {
+    const key = sanitizeContent(item.jenis) || "Lainnya";
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, MAX_CONTEXT_ITEMS)
+    .map(([jenis, jumlah]) => ({ jenis, jumlah }));
+}
+
+function buildKnowledgeColumns(items) {
+  const keys = new Set();
+
+  items.forEach((item) => {
+    Object.keys(item.fields || {}).forEach((key) => keys.add(key));
+  });
+
+  return Array.from(keys).slice(0, MAX_CONTEXT_FIELDS);
+}
+
+function buildQueryTerms(message, context) {
+  const raw = [
+    message,
+    context?.query,
+    context?.selectedJenis,
+    context?.title,
+    context?.currentItem?.nama,
+    context?.currentItem?.nama_latin,
+    context?.currentItem?.jenis,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return Array.from(
+    new Set(
+      normalizeText(raw)
+        .split(" ")
+        .filter((word) => word.length >= 3)
+    )
+  );
+}
+
+function scoreKnowledgeItem(item, queryTerms, context) {
+  const currentName = normalizeText(context?.currentItem?.nama || "");
+  const currentLatin = normalizeText(context?.currentItem?.nama_latin || "");
+  const selectedJenis = normalizeText(context?.selectedJenis || "");
+  const itemName = normalizeText(item.nama);
+  const itemLatin = normalizeText(item.nama_latin);
+  const itemJenis = normalizeText(item.jenis);
+
+  let score = 0;
+
+  queryTerms.forEach((term) => {
+    if (item.searchText.includes(term)) score += 3;
+    if (itemName === term || itemLatin === term) score += 8;
+    if (itemName.includes(term) || itemLatin.includes(term)) score += 4;
+    if (itemJenis && itemJenis === term) score += 5;
+  });
+
+  if (currentName && itemName === currentName) score += 10;
+  if (currentLatin && itemLatin && itemLatin === currentLatin) score += 8;
+  if (selectedJenis && itemJenis && itemJenis === selectedJenis) score += 4;
+
+  return score;
+}
+
+function summarizeKnowledgeItem(item) {
+  return {
+    id: item.id,
+    nama: item.nama,
+    nama_latin: item.nama_latin,
+    jenis: item.jenis,
+    manfaat: Array.isArray(item.manfaat) ? item.manfaat.slice(0, 4) : [],
+    catatan: Array.isArray(item.catatan) ? item.catatan.slice(0, 3) : [],
+    deskripsi: sanitizeContent(item.deskripsi),
+    fields: sanitizeFieldMap(item.fields),
+  };
+}
+
+function pickKnowledgeItems(items, message, context) {
+  const queryTerms = buildQueryTerms(message, context);
+
+  return items
+    .map((item) => ({
+      item,
+      score: scoreKnowledgeItem(item, queryTerms, context),
+    }))
+    .sort((a, b) => b.score - a.score || a.item.nama.localeCompare(b.item.nama))
+    .slice(0, MAX_KNOWLEDGE_ITEMS)
+    .map(({ item }) => summarizeKnowledgeItem(item));
+}
+
+async function buildKnowledgeBase(message, context, dataSource) {
+  const dataset = await loadKnowledgeDataset(dataSource);
+
+  return sanitizeKnowledgeBase({
+    source: dataSource.url,
+    note: "Knowledge base ini diambil backend langsung dari API sumber data situs. Jawaban harus berdasarkan data ini. Jika informasi tidak ada di sini, katakan tidak ditemukan pada dataset situs.",
+    totalItems: dataset.length,
+    columns: buildKnowledgeColumns(dataset),
+    jenisSummary: buildJenisSummary(dataset),
+    items: pickKnowledgeItems(dataset, message, context),
+  });
+}
+
 function buildSystemPrompt(context) {
   const basePrompt =
     "Kamu adalah asisten AI untuk website TOGA. Jawab dalam Bahasa Indonesia, ringkas, jelas, aman, dan membantu. Jika pertanyaan berkaitan dengan kesehatan, jangan memberi diagnosis pasti, jangan menggantikan tenaga kesehatan, dan sarankan pemeriksaan medis saat gejala berat, mendadak, berkepanjangan, atau berbahaya.";
+  const knowledgePrompt =
+    "Jika knowledgeBase tersedia, gunakan hanya knowledgeBase sebagai sumber fakta utama. Jangan mengarang. Jangan menambah data di luar dataset situs. Knowledge base lebih prioritas daripada konteks halaman umum atau data dummy. Jika informasi yang diminta tidak ada di knowledgeBase, jawab terus terang bahwa data tersebut tidak ditemukan pada dataset situs.";
 
-  if (!context || !context.page) {
-    return basePrompt;
+  if (!context) return basePrompt;
+  if (!context.page && context.knowledgeBase?.items?.length) {
+    return `${basePrompt} ${knowledgePrompt}`;
   }
 
+  if (!context.page) return basePrompt;
+
   if (context.page === "ramuan") {
-    return `${basePrompt} Fokus pada ramuan TOGA, tanaman yang relevan, langkah sederhana, cara penggunaan dasar, dan peringatan umum. Jika bahan atau tanaman tidak ada di konteks, katakan dengan jujur. Jangan membuat klaim medis pasti.`;
+    return `${basePrompt} Fokus pada ramuan TOGA, tanaman yang relevan, langkah sederhana, cara penggunaan dasar, dan peringatan umum. Jika bahan atau tanaman tidak ada di konteks, katakan dengan jujur. Jangan membuat klaim medis pasti. ${knowledgePrompt}`;
   }
 
   if (context.page === "tanaman") {
-    return `${basePrompt} Fokus pada tanaman TOGA yang sedang dibuka atau terlihat di daftar. Gunakan konteks tanaman aktif bila tersedia, jelaskan manfaat, penggunaan dasar, dan catatan kehati-hatian secara praktis.`;
+    return `${basePrompt} Fokus pada tanaman TOGA yang sedang dibuka atau terlihat di daftar. Gunakan konteks tanaman aktif bila tersedia, jelaskan manfaat, penggunaan dasar, catatan kehati-hatian, dan kolom data lain yang memang tersedia. ${knowledgePrompt}`;
   }
 
   if (context.page === "gallery") {
-    return `${basePrompt} Fokus pada galeri kegiatan TOGA. Jawab dengan merangkum kegiatan, menjelaskan manfaat kegiatan untuk warga, atau menjelaskan isi dokumentasi yang sedang dibuka.`;
+    return `${basePrompt} Fokus pada galeri kegiatan TOGA. Jawab dengan merangkum kegiatan, menjelaskan manfaat kegiatan untuk warga, atau menjelaskan isi dokumentasi yang sedang dibuka. ${knowledgePrompt}`;
   }
 
-  return basePrompt;
+  return `${basePrompt} ${knowledgePrompt}`;
+}
+
+function findExactKnowledgeMatch(message, context) {
+  const items = Array.isArray(context?.knowledgeBase?.items)
+    ? context.knowledgeBase.items
+    : [];
+  const normalizedMessage = normalizeText(message);
+  if (!normalizedMessage) return null;
+
+  return (
+    items.find((item) => {
+      const nama = normalizeText(item?.nama || "");
+      const latin = normalizeText(item?.nama_latin || "");
+
+      return (
+        (nama && normalizedMessage.includes(nama)) ||
+        (latin && normalizedMessage.includes(latin))
+      );
+    }) || null
+  );
+}
+
+function buildKnowledgeInstructionMessage(message, context) {
+  const items = Array.isArray(context?.knowledgeBase?.items)
+    ? context.knowledgeBase.items
+    : [];
+
+  if (items.length === 0) return null;
+
+  const exactMatch = findExactKnowledgeMatch(message, context);
+
+  if (exactMatch) {
+    return {
+      role: "system",
+      content: `Untuk pertanyaan user ini, item yang ditanyakan SUDAH DITEMUKAN di knowledgeBase situs. Jangan jawab bahwa item tersebut tidak ditemukan. Gunakan data item berikut sebagai rujukan utama:\n${JSON.stringify(
+        exactMatch
+      )}`,
+    };
+  }
+
+  return {
+    role: "system",
+    content: `Gunakan item-item knowledgeBase berikut sebagai kandidat utama jawaban. Jika salah satu item relevan, jelaskan berdasarkan field item itu dan jangan bilang data tidak ditemukan:\n${JSON.stringify(
+      items
+    )}`,
+  };
 }
 
 function buildContextMessage(context) {
-  if (!context || !context.page) return null;
+  if (!context || typeof context !== "object") return null;
 
   const compact = {
     page: context.page,
@@ -189,15 +710,22 @@ function buildContextMessage(context) {
     currentItem: context.currentItem,
     visibleItems: context.visibleItems,
     remedies: context.remedies,
+    knowledgeBase: context.knowledgeBase,
   };
 
   return {
     role: "system",
-    content: `Gunakan konteks halaman berikut bila relevan:\n${JSON.stringify(compact)}`,
+    content: `Gunakan konteks halaman berikut bila relevan:\n${JSON.stringify(
+      compact
+    )}`,
   };
 }
 
 function buildMessages(message, history, context) {
+  const knowledgeInstructionMessage = buildKnowledgeInstructionMessage(
+    message,
+    context
+  );
   const contextMessage = buildContextMessage(context);
 
   return [
@@ -205,6 +733,7 @@ function buildMessages(message, history, context) {
       role: "system",
       content: buildSystemPrompt(context),
     },
+    ...(knowledgeInstructionMessage ? [knowledgeInstructionMessage] : []),
     ...(contextMessage ? [contextMessage] : []),
     ...history,
     {
@@ -279,7 +808,7 @@ async function sendOpenRouterChat(messages, origin) {
       model: DEFAULT_MODEL,
       messages,
       max_tokens: MAX_OUTPUT_TOKENS,
-      temperature: 0.5,
+      temperature: 0.2,
     }),
   }).finally(() => {
     clearTimeout(timer);
@@ -292,9 +821,7 @@ async function sendOpenRouterChat(messages, origin) {
       data?.error?.message ||
       data?.message ||
       `OpenRouter request failed with HTTP ${response.status}`;
-    const error = new Error(detail);
-    error.status = response.status;
-    throw error;
+    throw createHttpError(detail, response.status);
   }
 
   return {
@@ -330,7 +857,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { message, history = [], context = null } = req.body || {};
+    const { message, history = [], context = null, dataSource = null } =
+      req.body || {};
     const trimmedMessage = sanitizeContent(message);
 
     if (!trimmedMessage) {
@@ -341,13 +869,35 @@ export default async function handler(req, res) {
 
     const safeHistory = sanitizeHistory(history);
     const safeContext = sanitizeContext(context);
-    const messages = buildMessages(trimmedMessage, safeHistory, safeContext);
+    const safeDataSource = sanitizeDataSource(dataSource);
+    const finalContext =
+      safeDataSource && safeContext
+        ? {
+            ...safeContext,
+            knowledgeBase: await buildKnowledgeBase(
+              trimmedMessage,
+              safeContext,
+              safeDataSource
+            ),
+          }
+        : safeDataSource
+        ? {
+            knowledgeBase: await buildKnowledgeBase(
+              trimmedMessage,
+              null,
+              safeDataSource
+            ),
+          }
+        : safeContext;
+
+    const messages = buildMessages(trimmedMessage, safeHistory, finalContext);
     const result = await sendOpenRouterChat(messages, origin);
 
     return res.status(200).json({
       reply: result.reply || "",
       model: DEFAULT_MODEL,
       provider: "openrouter",
+      knowledgeSource: safeDataSource?.url || "",
     });
   } catch (error) {
     console.error("OpenRouter error:", error);
@@ -358,10 +908,10 @@ export default async function handler(req, res) {
 
     return res.status(error?.status || (isAbortError ? 504 : 500)).json({
       error: isAbortError
-        ? "Backend kehabisan waktu saat menunggu OpenRouter."
+        ? "Backend kehabisan waktu saat menunggu respons."
         : "Terjadi kesalahan di server.",
       detail: isAbortError
-        ? `OpenRouter tidak merespons dalam ${OPENROUTER_TIMEOUT_MS} ms.`
+        ? `Permintaan tidak selesai dalam ${OPENROUTER_TIMEOUT_MS} ms.`
         : error?.message || "Unknown error",
       provider: "openrouter",
     });
