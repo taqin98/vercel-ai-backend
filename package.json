@@ -4,6 +4,6 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "check": "node --check api/chat.js"
+    "check": "node --check api/chat.js && node --check api/image-proxy.js"
   }
 }

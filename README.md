@@ -7,7 +7,8 @@ Backend serverless ini dipakai untuk memanggil OpenRouter dari sisi server agar 
 ```txt
 vercel-ai-backend/
 ├── api/
-│   └── chat.js
+│   ├── chat.js
+│   └── image-proxy.js
 ├── package.json
 ├── vercel.json
 └── .env.example
@@ -53,6 +54,13 @@ npm run check
 ## Endpoint
 
 `POST /api/chat`
+
+`GET /api/image-proxy?url=<encoded-image-url>`
+
+Catatan `image-proxy`:
+- Dipakai untuk me-render thumbnail Google Drive sebagai texture A-Frame / WebGL tanpa mentok CORS browser.
+- Host upstream dibatasi ke domain Google Drive / Googleusercontent yang relevan.
+- Frontend bisa mengarah ke endpoint ini lewat `window.TOGA_CONFIG.imageProxyUrl`.
 
 Body:
 
