@@ -100,6 +100,20 @@ function normalizeUpstreamImageUrl(rawUrl) {
   return rawUrl;
 }
 
+function buildDriveFallbackUrls(rawUrl) {
+  const normalizedUrl = normalizeUpstreamImageUrl(rawUrl);
+  const parsedUrl = new URL(normalizedUrl);
+  const fileId = parsedUrl.searchParams.get("id") || "";
+
+  if (!fileId) return [normalizedUrl];
+
+  return [
+    normalizedUrl,
+    `https://drive.google.com/uc?export=view&id=${encodeURIComponent(fileId)}`,
+    `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`,
+  ];
+}
+
 async function fetchRemoteImage(targetUrl) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), IMAGE_PROXY_TIMEOUT_MS);
@@ -130,6 +144,28 @@ async function fetchRemoteImage(targetUrl) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function fetchRemoteImageWithFallbacks(rawUrl) {
+  const candidateUrls = buildDriveFallbackUrls(rawUrl);
+  let lastError = null;
+
+  for (const candidateUrl of candidateUrls) {
+    try {
+      return await fetchRemoteImage(candidateUrl);
+    } catch (error) {
+      lastError = error;
+      const statusMatch = String(error?.message || "").match(/\((\d+)\)/);
+      const status = Number(statusMatch?.[1] || 0);
+      const shouldTryNext =
+        candidateUrl !== candidateUrls[candidateUrls.length - 1] &&
+        (status === 429 || status === 403 || status === 404);
+
+      if (!shouldTryNext) break;
+    }
+  }
+
+  throw lastError || new Error("Upstream image request failed");
 }
 
 export default async function handler(req, res) {
@@ -166,8 +202,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const upstreamUrl = normalizeUpstreamImageUrl(rawUrl);
-    const image = await fetchRemoteImage(upstreamUrl);
+    const image = await fetchRemoteImageWithFallbacks(rawUrl);
 
     res.setHeader("Content-Type", image.contentType);
     res.setHeader("Cache-Control", "public, s-maxage=86400, max-age=86400");
