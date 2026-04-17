@@ -14,6 +14,9 @@ const ALLOWED_IMAGE_HOSTS = new Set([
   "docs.google.com",
   "lh3.googleusercontent.com",
   "drive.usercontent.google.com",
+  "commons.wikimedia.org",
+  "upload.wikimedia.org",
+  "wikimedia.org",
 ]);
 
 const IMAGE_PROXY_TIMEOUT_MS = 15000;
@@ -84,6 +87,19 @@ function createDriveThumbnailUrl(rawUrl) {
   return `https://drive.google.com/thumbnail?id=${encodeURIComponent(fileId)}&sz=w${safeWidth}`;
 }
 
+function normalizeUpstreamImageUrl(rawUrl) {
+  const parsedUrl = new URL(rawUrl);
+  if (
+    parsedUrl.hostname === "drive.google.com" ||
+    parsedUrl.hostname === "docs.google.com" ||
+    parsedUrl.hostname === "drive.usercontent.google.com"
+  ) {
+    return createDriveThumbnailUrl(rawUrl);
+  }
+
+  return rawUrl;
+}
+
 async function fetchRemoteImage(targetUrl) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), IMAGE_PROXY_TIMEOUT_MS);
@@ -150,7 +166,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const upstreamUrl = createDriveThumbnailUrl(rawUrl);
+    const upstreamUrl = normalizeUpstreamImageUrl(rawUrl);
     const image = await fetchRemoteImage(upstreamUrl);
 
     res.setHeader("Content-Type", image.contentType);
