@@ -21,7 +21,8 @@ const DATA_SOURCE_CACHE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_OPENROUTER_TIMEOUT_MS = 90000;
 const OPENROUTER_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 const OPENROUTER_RETRY_DELAY_MS = 600;
-const DEFAULT_OPENROUTER_MAX_TOKENS = 220;
+const DEFAULT_OPENROUTER_MAX_TOKENS = 360;
+const CONTINUATION_MAX_TOKENS = 180;
 const DEFAULT_FUNCTION_TIMEOUT_MS = 300000;
 const RESPONSE_HEADROOM_MS = 1200;
 const MIN_STAGE_TIMEOUT_MS = 1500;
@@ -787,7 +788,7 @@ async function buildKnowledgeBase(
 
 function buildSystemPrompt(context) {
   const basePrompt =
-    "Kamu adalah asisten AI untuk website TOGA. Jawab dalam Bahasa Indonesia, ringkas, jelas, aman, dan membantu. Gunakan 2-4 kalimat lengkap dan akhiri jawaban dengan tanda titik. Jangan berhenti di tengah kalimat. Jika pertanyaan berkaitan dengan kesehatan, jangan memberi diagnosis pasti, jangan menggantikan tenaga kesehatan, dan sarankan pemeriksaan medis saat gejala berat, mendadak, berkepanjangan, atau berbahaya.";
+    "Kamu adalah asisten AI untuk website TOGA. Jawab dalam Bahasa Indonesia yang natural, jelas, dan informatif. Utamakan jawaban yang langsung menjawab pertanyaan user, biasanya 3-6 kalimat atau poin singkat bila lebih jelas. Akhiri jawaban dengan kalimat lengkap dan jangan berhenti di tengah kalimat. Jika pertanyaan berkaitan dengan kesehatan, jangan memberi diagnosis pasti, jangan menggantikan tenaga kesehatan, dan sarankan pemeriksaan medis saat gejala berat, mendadak, berkepanjangan, atau berbahaya.";
   const knowledgePrompt =
     "Jika knowledgeBase tersedia, gunakan knowledgeBase sebagai sumber fakta utama. Jangan mengarang. Jangan menambah data di luar dataset situs. Knowledge base lebih prioritas daripada konteks halaman umum atau data dummy. Kecocokan `matchedItem`, `matchType`, `availableFields`, dan `knowledgeBase.items` harus dipakai untuk menyusun jawaban. Jika `matchedItem` ada, jawab berdasarkan item itu dan jangan bilang data tidak ditemukan. Jika data kurang lengkap, katakan bahwa dataset hanya memuat field yang tersedia. Hanya bila `matchType` adalah `none` dan kandidat knowledgeBase memang tidak relevan, barulah katakan data tidak ditemukan pada dataset situs.";
 
@@ -871,10 +872,18 @@ function buildKnowledgeInstructionMessage(message, context) {
 function buildKnowledgeContextMessage(context) {
   if (!context?.knowledgeBase) return null;
 
+  const compactKnowledge = {
+    source: context.knowledgeBase.source,
+    totalItems: context.knowledgeBase.totalItems,
+    matchType: context.knowledgeBase.matchType,
+    matchReason: context.knowledgeBase.matchReason,
+    availableFields: context.knowledgeBase.availableFields,
+  };
+
   return {
     role: "system",
-    content: `Knowledge base utama untuk pertanyaan ini:\n${JSON.stringify(
-      context.knowledgeBase
+    content: `Metadata knowledge base untuk pertanyaan ini:\n${JSON.stringify(
+      compactKnowledge
     )}`,
   };
 }
@@ -1091,9 +1100,9 @@ function extractFinishReason(payload) {
   );
 }
 
-function isLikelyTruncatedReply(reply, finishReason) {
+function shouldContinueReply(reply, finishReason) {
   const text = sanitizeContent(reply);
-  if (!text) return true;
+  if (!text) return false;
 
   if (/^(length|max_tokens)$/i.test(String(finishReason || ""))) {
     return true;
@@ -1107,11 +1116,38 @@ function isLikelyTruncatedReply(reply, finishReason) {
   return words.length >= 6 && text.length >= 32;
 }
 
+function mergeReplyParts(initialReply, continuationReply) {
+  const first = sanitizeContent(initialReply);
+  const second = sanitizeContent(continuationReply);
+
+  if (!first) return second;
+  if (!second) return first;
+  if (first.endsWith("-")) return `${first}${second}`;
+  if (/[\s(]$/.test(first) || /^[,.;:!?)]/.test(second)) return `${first}${second}`;
+  return `${first} ${second}`;
+}
+
+function buildContinuationMessages(messages, partialReply) {
+  return [
+    ...messages,
+    {
+      role: "assistant",
+      content: partialReply,
+    },
+    {
+      role: "user",
+      content:
+        "Lanjutkan jawaban sebelumnya dari kata terakhir tanpa mengulang dari awal. Tetap ringkas, informatif, dan akhiri dengan kalimat lengkap.",
+    },
+  ];
+}
+
 async function sendOpenRouterRequest(
   messages,
   origin,
   model,
-  timeoutMs = OPENROUTER_TIMEOUT_MS
+  timeoutMs = OPENROUTER_TIMEOUT_MS,
+  maxTokens = MAX_OUTPUT_TOKENS
 ) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -1126,7 +1162,7 @@ async function sendOpenRouterRequest(
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: MAX_OUTPUT_TOKENS,
+        max_tokens: maxTokens,
         temperature: 0.2,
       }),
     });
@@ -1154,15 +1190,6 @@ async function sendOpenRouterRequest(
 
   const reply = extractReplyText(data);
   const finishReason = extractFinishReason(data);
-
-  if (isLikelyTruncatedReply(reply, finishReason)) {
-    throw createHttpError(
-      `[${model}] Jawaban model terpotong atau tidak selesai${
-        finishReason ? ` (finish_reason=${finishReason})` : ""
-      }`,
-      503
-    );
-  }
 
   return {
     reply,
@@ -1203,12 +1230,46 @@ async function sendOpenRouterChat(
       );
 
       try {
-        return await sendOpenRouterRequest(
+        const initialResult = await sendOpenRouterRequest(
           messages,
           origin,
           model,
           perAttemptTimeoutMs
         );
+
+        if (
+          shouldContinueReply(initialResult.reply, initialResult.finishReason) &&
+          perAttemptTimeoutMs >= MIN_STAGE_TIMEOUT_MS * 2
+        ) {
+          const continuationTimeoutMs = Math.max(
+            MIN_STAGE_TIMEOUT_MS,
+            Math.floor(perAttemptTimeoutMs * 0.35)
+          );
+
+          try {
+            const continuationResult = await sendOpenRouterRequest(
+              buildContinuationMessages(messages, initialResult.reply),
+              origin,
+              model,
+              continuationTimeoutMs,
+              CONTINUATION_MAX_TOKENS
+            );
+
+            return {
+              ...initialResult,
+              reply: mergeReplyParts(
+                initialResult.reply,
+                continuationResult.reply
+              ),
+              finishReason:
+                continuationResult.finishReason || initialResult.finishReason,
+            };
+          } catch (continuationError) {
+            console.warn("OpenRouter continuation failed:", continuationError);
+          }
+        }
+
+        return initialResult;
       } catch (error) {
         lastError = error;
 
