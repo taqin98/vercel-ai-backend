@@ -21,6 +21,8 @@ vercel-ai-backend/
   Default: `openrouter/free`
 - `OPENROUTER_FALLBACK_MODELS`
   Opsional. Daftar model cadangan dipisahkan koma. Dipakai saat model utama kena `429/5xx` dari provider.
+- `FUNCTION_TIMEOUT_MS`
+  Opsional. Timeout fungsi dalam milidetik. Default backend ini diasumsikan `10000` ms agar masih ada headroom sebelum Vercel memotong request.
 - `OPENROUTER_SITE_URL`
   Disarankan isi URL situs GitHub Pages Anda untuk header `HTTP-Referer`.
 - `OPENROUTER_APP_NAME`
@@ -49,6 +51,7 @@ npm run check
    - `OPENROUTER_API_KEY`
    - `OPENROUTER_MODEL`
    - `OPENROUTER_FALLBACK_MODELS`
+   - `FUNCTION_TIMEOUT_MS`
    - `OPENROUTER_SITE_URL`
    - `OPENROUTER_APP_NAME`
    - `ALLOWED_ORIGINS`
@@ -110,3 +113,5 @@ console.log(data.reply);
 OpenRouter menyediakan model gratis, tetapi daftar dan ketersediaannya bisa berubah. Untuk awal yang sederhana, gunakan `OPENROUTER_MODEL=openrouter/free`, lalu jika Anda ingin model gratis spesifik yang sedang aktif, ganti nilainya di environment Vercel tanpa perlu mengubah frontend.
 
 Jika Anda sering mendapat error provider seperti `503`, isi juga `OPENROUTER_FALLBACK_MODELS` agar backend bisa mencoba model cadangan sebelum gagal total.
+
+Jika log Vercel menunjukkan fungsi berhenti di sekitar 10 detik, set `FUNCTION_TIMEOUT_MS=10000` atau sesuai limit plan/runtime Anda. Backend ini akan menyisakan headroom agar respons error masih sempat dikirim sebelum function diputus.

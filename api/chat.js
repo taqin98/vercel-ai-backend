@@ -22,7 +22,8 @@ const OPENROUTER_TIMEOUT_MS = 14000;
 const OPENROUTER_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 const OPENROUTER_RETRY_DELAY_MS = 600;
 const MAX_OUTPUT_TOKENS = 500;
-const FUNCTION_BUDGET_MS = 25000;
+const DEFAULT_FUNCTION_TIMEOUT_MS = 10000;
+const RESPONSE_HEADROOM_MS = 1200;
 const MIN_STAGE_TIMEOUT_MS = 1500;
 const DEFAULT_LOCAL_ORIGINS = [
   "http://localhost",
@@ -68,6 +69,20 @@ function createHttpError(message, status = 500) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+function parsePositiveInt(rawValue, fallback) {
+  const value = Number.parseInt(String(rawValue || ""), 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+const FUNCTION_TIMEOUT_MS = parsePositiveInt(
+  process.env.FUNCTION_TIMEOUT_MS || process.env.VERCEL_FUNCTION_TIMEOUT_MS,
+  DEFAULT_FUNCTION_TIMEOUT_MS
+);
+const FUNCTION_BUDGET_MS = Math.max(
+  FUNCTION_TIMEOUT_MS - RESPONSE_HEADROOM_MS,
+  MIN_STAGE_TIMEOUT_MS * 2
+);
 
 function setCorsHeaders(req, res) {
   const origin = req.headers.origin || "";
