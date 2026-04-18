@@ -1,10 +1,10 @@
 {
   "functions": {
     "api/chat.js": {
-      "maxDuration": 30
+      "maxDuration": 300
     },
     "api/image-proxy.js": {
-      "maxDuration": 30
+      "maxDuration": 300
     }
   }
 }

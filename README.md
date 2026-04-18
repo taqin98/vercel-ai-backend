@@ -22,9 +22,9 @@ vercel-ai-backend/
 - `OPENROUTER_FALLBACK_MODELS`
   Opsional. Daftar model cadangan dipisahkan koma. Dipakai saat model utama kena `429/5xx` dari provider atau timeout internal backend.
 - `FUNCTION_TIMEOUT_MS`
-  Opsional. Timeout fungsi dalam milidetik. Default backend ini `30000` ms agar selaras dengan `maxDuration` di `vercel.json`, lalu backend tetap menyisakan headroom sebelum Vercel memotong request.
+  Opsional. Timeout fungsi dalam milidetik. Default backend ini `300000` ms agar selaras dengan `maxDuration: 300` di `vercel.json` untuk Vercel Hobby dengan Fluid Compute aktif, lalu backend tetap menyisakan headroom sebelum Vercel memotong request.
 - `OPENROUTER_TIMEOUT_MS`
-  Opsional. Timeout khusus request ke OpenRouter dalam milidetik. Default `20000` ms, tetapi tetap akan dipotong otomatis jika sisa budget function lebih kecil.
+  Opsional. Timeout khusus request ke OpenRouter dalam milidetik. Default `90000` ms, tetapi tetap akan dipotong otomatis jika sisa budget function lebih kecil.
 - `DATA_SOURCE_TIMEOUT_MS`
   Opsional. Timeout fetch dataset situs dalam milidetik. Default `12000` ms. Jika sumber data gagal atau lambat, backend akan lanjut ke OpenRouter tanpa knowledge base situs dan menandai respons bahwa knowledge source sedang unavailable.
 - `OPENROUTER_MAX_TOKENS`
@@ -124,6 +124,6 @@ OpenRouter menyediakan model gratis, tetapi daftar dan ketersediaannya bisa beru
 
 Jika Anda sering mendapat error provider seperti `503` atau timeout `504`, isi juga `OPENROUTER_FALLBACK_MODELS` agar backend bisa mencoba model cadangan sebelum gagal total.
 
-Jika runtime Vercel Anda lebih pendek dari `30` detik, turunkan `FUNCTION_TIMEOUT_MS` agar sesuai limit plan/runtime Anda. Untuk model gratis OpenRouter yang lambat, jangan hanya menaikkan `OPENROUTER_TIMEOUT_MS`; turunkan juga `OPENROUTER_MAX_TOKENS`, kurangi history, atau gunakan model yang lebih cepat.
+Jika runtime Vercel Anda lebih pendek dari `300` detik, turunkan `FUNCTION_TIMEOUT_MS` agar sesuai limit plan/runtime Anda. Untuk model gratis OpenRouter yang lambat, jangan hanya menaikkan `OPENROUTER_TIMEOUT_MS`; turunkan juga `OPENROUTER_MAX_TOKENS`, kurangi history, atau gunakan model yang lebih cepat.
 
 Jika API data situs Anda kadang lambat, naikkan `DATA_SOURCE_TIMEOUT_MS`. Backend ini sekarang tetap mengirim jawaban chat meski knowledge source timeout, dengan `knowledgeSourceStatus: "unavailable"` dan objek `knowledgeWarning` pada respons. Di frontend, fetch data source remote juga dinonaktifkan secara default agar request chat tidak selalu menunggu API Google Apps Script.
