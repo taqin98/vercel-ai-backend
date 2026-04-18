@@ -2,6 +2,14 @@ import { isIP } from "node:net";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
+const FALLBACK_MODELS = String(
+  process.env.OPENROUTER_FALLBACK_MODELS ||
+    process.env.OPENROUTER_MODELS ||
+    ""
+)
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
 const MAX_HISTORY_ITEMS = 10;
 const MAX_CONTENT_LENGTH = 4000;
 const MAX_CONTEXT_ITEMS = 6;
@@ -11,6 +19,8 @@ const MAX_DATASET_FIELD_ITEMS = 8;
 const DATA_SOURCE_TIMEOUT_MS = 8000;
 const DATA_SOURCE_CACHE_TTL_MS = 10 * 60 * 1000;
 const OPENROUTER_TIMEOUT_MS = 14000;
+const OPENROUTER_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+const OPENROUTER_RETRY_DELAY_MS = 600;
 const MAX_OUTPUT_TOKENS = 500;
 const FUNCTION_BUDGET_MS = 25000;
 const MIN_STAGE_TIMEOUT_MS = 1500;
@@ -53,6 +63,10 @@ function createHttpError(message, status = 500) {
   const error = new Error(message);
   error.status = status;
   return error;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function setCorsHeaders(req, res) {
@@ -927,6 +941,36 @@ function buildOpenRouterHeaders(origin) {
   return headers;
 }
 
+function getOpenRouterModelCandidates() {
+  return Array.from(new Set([DEFAULT_MODEL, ...FALLBACK_MODELS])).filter(Boolean);
+}
+
+function extractOpenRouterErrorMessage(data, status, model) {
+  const detail =
+    data?.error?.message ||
+    data?.message ||
+    `OpenRouter request failed with HTTP ${status}`;
+
+  return model ? `[${model}] ${detail}` : detail;
+}
+
+function shouldRetryOpenRouterError(error) {
+  return OPENROUTER_RETRYABLE_STATUSES.has(Number(error?.status));
+}
+
+function buildTransientProviderMessage(lastError, attemptedModels) {
+  const modelsText = attemptedModels.filter(Boolean).join(", ");
+  const suffix = modelsText
+    ? ` Model yang dicoba: ${modelsText}.`
+    : "";
+
+  return (
+    "Provider AI sementara tidak tersedia atau sedang sibuk. Coba lagi beberapa saat lagi, atau ganti model OpenRouter di environment backend." +
+    suffix +
+    (lastError?.message ? ` Detail terakhir: ${lastError.message}` : "")
+  );
+}
+
 function extractReplyText(payload) {
   const content = payload?.choices?.[0]?.message?.content;
 
@@ -948,9 +992,10 @@ function extractReplyText(payload) {
   return "";
 }
 
-async function sendOpenRouterChat(
+async function sendOpenRouterRequest(
   messages,
   origin,
+  model,
   timeoutMs = OPENROUTER_TIMEOUT_MS
 ) {
   const controller = new AbortController();
@@ -961,7 +1006,7 @@ async function sendOpenRouterChat(
     headers: buildOpenRouterHeaders(origin),
     signal: controller.signal,
     body: JSON.stringify({
-      model: DEFAULT_MODEL,
+      model,
       messages,
       max_tokens: MAX_OUTPUT_TOKENS,
       temperature: 0.2,
@@ -973,17 +1018,82 @@ async function sendOpenRouterChat(
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    const detail =
-      data?.error?.message ||
-      data?.message ||
-      `OpenRouter request failed with HTTP ${response.status}`;
-    throw createHttpError(detail, response.status);
+    throw createHttpError(
+      extractOpenRouterErrorMessage(data, response.status, model),
+      response.status
+    );
   }
 
   return {
     reply: extractReplyText(data),
     raw: data,
+    model,
   };
+}
+
+async function sendOpenRouterChat(
+  messages,
+  origin,
+  timeoutMs = OPENROUTER_TIMEOUT_MS
+) {
+  const startedAtMs = Date.now();
+  const modelCandidates = getOpenRouterModelCandidates();
+  const totalAttempts = modelCandidates.length === 1 ? 2 : modelCandidates.length;
+  const attemptedModels = [];
+  let lastError = null;
+  let attemptsUsed = 0;
+
+  for (let index = 0; index < modelCandidates.length; index += 1) {
+    const model = modelCandidates[index];
+    const maxAttempts = modelCandidates.length === 1 ? 2 : 1;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      attemptsUsed += 1;
+      attemptedModels.push(attempt > 1 ? `${model} (retry)` : model);
+
+      const attemptsLeft = Math.max(totalAttempts - attemptsUsed + 1, 1);
+      const remainingTimeoutMs = Math.max(
+        timeoutMs - (Date.now() - startedAtMs),
+        MIN_STAGE_TIMEOUT_MS
+      );
+      const perAttemptTimeoutMs = Math.max(
+        MIN_STAGE_TIMEOUT_MS,
+        Math.floor(remainingTimeoutMs / attemptsLeft)
+      );
+
+      try {
+        return await sendOpenRouterRequest(
+          messages,
+          origin,
+          model,
+          perAttemptTimeoutMs
+        );
+      } catch (error) {
+        lastError = error;
+
+        if (!shouldRetryOpenRouterError(error)) {
+          throw error;
+        }
+
+        const hasNextModel = index < modelCandidates.length - 1;
+        const shouldRetrySameModel = modelCandidates.length === 1 && attempt < maxAttempts;
+
+        if (!hasNextModel && !shouldRetrySameModel) {
+          throw createHttpError(
+            buildTransientProviderMessage(error, attemptedModels),
+            Number(error?.status) || 503
+          );
+        }
+
+        await sleep(OPENROUTER_RETRY_DELAY_MS);
+      }
+    }
+  }
+
+  throw createHttpError(
+    buildTransientProviderMessage(lastError, attemptedModels),
+    Number(lastError?.status) || 503
+  );
 }
 
 export default async function handler(req, res) {
@@ -1062,7 +1172,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       reply: result.reply || "",
-      model: DEFAULT_MODEL,
+      model: result.model || DEFAULT_MODEL,
       provider: "openrouter",
       knowledgeSource: safeDataSource?.url || "",
     });
@@ -1073,14 +1183,19 @@ export default async function handler(req, res) {
       error?.name === "AbortError" ||
       /aborted|timeout/i.test(String(error?.message || ""));
 
-    return res.status(error?.status || (isAbortError ? 504 : 500)).json({
+    const status = error?.status || (isAbortError ? 504 : 500);
+
+    return res.status(status).json({
       error: isAbortError
         ? "Backend kehabisan waktu saat menunggu respons."
+        : status === 503
+        ? "Provider AI sementara tidak tersedia."
         : "Terjadi kesalahan di server.",
       detail: isAbortError
         ? `Permintaan tidak selesai sebelum batas waktu proses Vercel habis (maks. ${FUNCTION_BUDGET_MS} ms).`
         : error?.message || "Unknown error",
       provider: "openrouter",
+      status,
     });
   }
 }
