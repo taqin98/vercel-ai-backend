@@ -787,7 +787,7 @@ async function buildKnowledgeBase(
 
 function buildSystemPrompt(context) {
   const basePrompt =
-    "Kamu adalah asisten AI untuk website TOGA. Jawab dalam Bahasa Indonesia, ringkas, jelas, aman, dan membantu. Jika pertanyaan berkaitan dengan kesehatan, jangan memberi diagnosis pasti, jangan menggantikan tenaga kesehatan, dan sarankan pemeriksaan medis saat gejala berat, mendadak, berkepanjangan, atau berbahaya.";
+    "Kamu adalah asisten AI untuk website TOGA. Jawab dalam Bahasa Indonesia, ringkas, jelas, aman, dan membantu. Gunakan 2-4 kalimat lengkap dan akhiri jawaban dengan tanda titik. Jangan berhenti di tengah kalimat. Jika pertanyaan berkaitan dengan kesehatan, jangan memberi diagnosis pasti, jangan menggantikan tenaga kesehatan, dan sarankan pemeriksaan medis saat gejala berat, mendadak, berkepanjangan, atau berbahaya.";
   const knowledgePrompt =
     "Jika knowledgeBase tersedia, gunakan knowledgeBase sebagai sumber fakta utama. Jangan mengarang. Jangan menambah data di luar dataset situs. Knowledge base lebih prioritas daripada konteks halaman umum atau data dummy. Kecocokan `matchedItem`, `matchType`, `availableFields`, dan `knowledgeBase.items` harus dipakai untuk menyusun jawaban. Jika `matchedItem` ada, jawab berdasarkan item itu dan jangan bilang data tidak ditemukan. Jika data kurang lengkap, katakan bahwa dataset hanya memuat field yang tersedia. Hanya bila `matchType` adalah `none` dan kandidat knowledgeBase memang tidak relevan, barulah katakan data tidak ditemukan pada dataset situs.";
 
@@ -1085,6 +1085,28 @@ function extractReplyText(payload) {
   return "";
 }
 
+function extractFinishReason(payload) {
+  return sanitizeContent(
+    payload?.choices?.[0]?.finish_reason || payload?.choices?.[0]?.finishReason
+  );
+}
+
+function isLikelyTruncatedReply(reply, finishReason) {
+  const text = sanitizeContent(reply);
+  if (!text) return true;
+
+  if (/^(length|max_tokens)$/i.test(String(finishReason || ""))) {
+    return true;
+  }
+
+  if (/[.!?)]$/.test(text)) {
+    return false;
+  }
+
+  const words = text.split(/\s+/).filter(Boolean);
+  return words.length >= 6 && text.length >= 32;
+}
+
 async function sendOpenRouterRequest(
   messages,
   origin,
@@ -1130,10 +1152,23 @@ async function sendOpenRouterRequest(
     );
   }
 
+  const reply = extractReplyText(data);
+  const finishReason = extractFinishReason(data);
+
+  if (isLikelyTruncatedReply(reply, finishReason)) {
+    throw createHttpError(
+      `[${model}] Jawaban model terpotong atau tidak selesai${
+        finishReason ? ` (finish_reason=${finishReason})` : ""
+      }`,
+      503
+    );
+  }
+
   return {
-    reply: extractReplyText(data),
+    reply,
     raw: data,
     model,
+    finishReason,
   };
 }
 
@@ -1272,6 +1307,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       reply: result.reply || "",
       model: result.model || DEFAULT_MODEL,
+      finishReason: result.finishReason || "",
       provider: "openrouter",
       knowledgeSource: safeDataSource?.url || "",
       knowledgeSourceStatus: knowledgeWarning?.unavailable ? "unavailable" : "ok",
