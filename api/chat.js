@@ -10,7 +10,7 @@ const FALLBACK_MODELS = String(
   .split(",")
   .map((item) => item.trim())
   .filter(Boolean);
-const MAX_HISTORY_ITEMS = 10;
+const MAX_HISTORY_ITEMS = 6;
 const MAX_CONTENT_LENGTH = 4000;
 const MAX_CONTEXT_ITEMS = 6;
 const MAX_KNOWLEDGE_ITEMS = 8;
@@ -21,7 +21,7 @@ const DATA_SOURCE_CACHE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_OPENROUTER_TIMEOUT_MS = 20000;
 const OPENROUTER_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 const OPENROUTER_RETRY_DELAY_MS = 600;
-const MAX_OUTPUT_TOKENS = 500;
+const DEFAULT_OPENROUTER_MAX_TOKENS = 220;
 const DEFAULT_FUNCTION_TIMEOUT_MS = 30000;
 const RESPONSE_HEADROOM_MS = 1200;
 const MIN_STAGE_TIMEOUT_MS = 1500;
@@ -86,6 +86,10 @@ const OPENROUTER_TIMEOUT_MS = parsePositiveInt(
 const DATA_SOURCE_TIMEOUT_MS = parsePositiveInt(
   process.env.DATA_SOURCE_TIMEOUT_MS,
   DEFAULT_DATA_SOURCE_TIMEOUT_MS
+);
+const MAX_OUTPUT_TOKENS = parsePositiveInt(
+  process.env.OPENROUTER_MAX_TOKENS,
+  DEFAULT_OPENROUTER_MAX_TOKENS
 );
 const FUNCTION_BUDGET_MS = Math.max(
   FUNCTION_TIMEOUT_MS - RESPONSE_HEADROOM_MS,
@@ -1282,13 +1286,11 @@ export default async function handler(req, res) {
 
     return res.status(status).json({
       error: isAbortError
-        ? "Backend kehabisan waktu saat menunggu respons."
+        ? "Provider AI tidak selesai sebelum timeout backend."
         : status === 503
         ? "Provider AI sementara tidak tersedia."
         : "Terjadi kesalahan di server.",
-      detail: isAbortError
-        ? `Permintaan tidak selesai sebelum batas waktu proses Vercel habis (maks. ${FUNCTION_BUDGET_MS} ms).`
-        : error?.message || "Unknown error",
+      detail: error?.message || "Unknown error",
       provider: "openrouter",
       status,
     });

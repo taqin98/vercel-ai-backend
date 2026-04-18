@@ -27,6 +27,8 @@ vercel-ai-backend/
   Opsional. Timeout khusus request ke OpenRouter dalam milidetik. Default `20000` ms, tetapi tetap akan dipotong otomatis jika sisa budget function lebih kecil.
 - `DATA_SOURCE_TIMEOUT_MS`
   Opsional. Timeout fetch dataset situs dalam milidetik. Default `12000` ms. Jika sumber data gagal atau lambat, backend akan lanjut ke OpenRouter tanpa knowledge base situs dan menandai respons bahwa knowledge source sedang unavailable.
+- `OPENROUTER_MAX_TOKENS`
+  Opsional. Batas panjang jawaban model. Default `220` untuk menjaga latensi tetap muat di runtime Vercel.
 - `OPENROUTER_SITE_URL`
   Disarankan isi URL situs GitHub Pages Anda untuk header `HTTP-Referer`.
 - `OPENROUTER_APP_NAME`
@@ -58,6 +60,7 @@ npm run check
    - `FUNCTION_TIMEOUT_MS`
    - `OPENROUTER_TIMEOUT_MS`
    - `DATA_SOURCE_TIMEOUT_MS`
+   - `OPENROUTER_MAX_TOKENS`
    - `OPENROUTER_SITE_URL`
    - `OPENROUTER_APP_NAME`
    - `ALLOWED_ORIGINS`
@@ -121,6 +124,6 @@ OpenRouter menyediakan model gratis, tetapi daftar dan ketersediaannya bisa beru
 
 Jika Anda sering mendapat error provider seperti `503` atau timeout `504`, isi juga `OPENROUTER_FALLBACK_MODELS` agar backend bisa mencoba model cadangan sebelum gagal total.
 
-Jika runtime Vercel Anda lebih pendek dari `30` detik, turunkan `FUNCTION_TIMEOUT_MS` agar sesuai limit plan/runtime Anda. Untuk model gratis OpenRouter yang lambat, naikkan `OPENROUTER_TIMEOUT_MS` secukupnya, tetapi jangan melebihi budget function yang tersedia.
+Jika runtime Vercel Anda lebih pendek dari `30` detik, turunkan `FUNCTION_TIMEOUT_MS` agar sesuai limit plan/runtime Anda. Untuk model gratis OpenRouter yang lambat, jangan hanya menaikkan `OPENROUTER_TIMEOUT_MS`; turunkan juga `OPENROUTER_MAX_TOKENS`, kurangi history, atau gunakan model yang lebih cepat.
 
-Jika API data situs Anda kadang lambat, naikkan `DATA_SOURCE_TIMEOUT_MS`. Backend ini sekarang tetap mengirim jawaban chat meski knowledge source timeout, dengan `knowledgeSourceStatus: "unavailable"` dan objek `knowledgeWarning` pada respons.
+Jika API data situs Anda kadang lambat, naikkan `DATA_SOURCE_TIMEOUT_MS`. Backend ini sekarang tetap mengirim jawaban chat meski knowledge source timeout, dengan `knowledgeSourceStatus: "unavailable"` dan objek `knowledgeWarning` pada respons. Di frontend, fetch data source remote juga dinonaktifkan secara default agar request chat tidak selalu menunggu API Google Apps Script.
