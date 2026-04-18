@@ -20,9 +20,11 @@ vercel-ai-backend/
 - `OPENROUTER_MODEL`
   Default: `openrouter/free`
 - `OPENROUTER_FALLBACK_MODELS`
-  Opsional. Daftar model cadangan dipisahkan koma. Dipakai saat model utama kena `429/5xx` dari provider.
+  Opsional. Daftar model cadangan dipisahkan koma. Dipakai saat model utama kena `429/5xx` dari provider atau timeout internal backend.
 - `FUNCTION_TIMEOUT_MS`
-  Opsional. Timeout fungsi dalam milidetik. Default backend ini diasumsikan `10000` ms agar masih ada headroom sebelum Vercel memotong request.
+  Opsional. Timeout fungsi dalam milidetik. Default backend ini `30000` ms agar selaras dengan `maxDuration` di `vercel.json`, lalu backend tetap menyisakan headroom sebelum Vercel memotong request.
+- `OPENROUTER_TIMEOUT_MS`
+  Opsional. Timeout khusus request ke OpenRouter dalam milidetik. Default `20000` ms, tetapi tetap akan dipotong otomatis jika sisa budget function lebih kecil.
 - `OPENROUTER_SITE_URL`
   Disarankan isi URL situs GitHub Pages Anda untuk header `HTTP-Referer`.
 - `OPENROUTER_APP_NAME`
@@ -52,6 +54,7 @@ npm run check
    - `OPENROUTER_MODEL`
    - `OPENROUTER_FALLBACK_MODELS`
    - `FUNCTION_TIMEOUT_MS`
+   - `OPENROUTER_TIMEOUT_MS`
    - `OPENROUTER_SITE_URL`
    - `OPENROUTER_APP_NAME`
    - `ALLOWED_ORIGINS`
@@ -112,6 +115,6 @@ console.log(data.reply);
 
 OpenRouter menyediakan model gratis, tetapi daftar dan ketersediaannya bisa berubah. Untuk awal yang sederhana, gunakan `OPENROUTER_MODEL=openrouter/free`, lalu jika Anda ingin model gratis spesifik yang sedang aktif, ganti nilainya di environment Vercel tanpa perlu mengubah frontend.
 
-Jika Anda sering mendapat error provider seperti `503`, isi juga `OPENROUTER_FALLBACK_MODELS` agar backend bisa mencoba model cadangan sebelum gagal total.
+Jika Anda sering mendapat error provider seperti `503` atau timeout `504`, isi juga `OPENROUTER_FALLBACK_MODELS` agar backend bisa mencoba model cadangan sebelum gagal total.
 
-Jika log Vercel menunjukkan fungsi berhenti di sekitar 10 detik, set `FUNCTION_TIMEOUT_MS=10000` atau sesuai limit plan/runtime Anda. Backend ini akan menyisakan headroom agar respons error masih sempat dikirim sebelum function diputus.
+Jika runtime Vercel Anda lebih pendek dari `30` detik, turunkan `FUNCTION_TIMEOUT_MS` agar sesuai limit plan/runtime Anda. Untuk model gratis OpenRouter yang lambat, naikkan `OPENROUTER_TIMEOUT_MS` secukupnya, tetapi jangan melebihi budget function yang tersedia.

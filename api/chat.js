@@ -18,11 +18,11 @@ const MAX_CONTEXT_FIELDS = 24;
 const MAX_DATASET_FIELD_ITEMS = 8;
 const DATA_SOURCE_TIMEOUT_MS = 8000;
 const DATA_SOURCE_CACHE_TTL_MS = 10 * 60 * 1000;
-const OPENROUTER_TIMEOUT_MS = 14000;
+const DEFAULT_OPENROUTER_TIMEOUT_MS = 20000;
 const OPENROUTER_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 const OPENROUTER_RETRY_DELAY_MS = 600;
 const MAX_OUTPUT_TOKENS = 500;
-const DEFAULT_FUNCTION_TIMEOUT_MS = 10000;
+const DEFAULT_FUNCTION_TIMEOUT_MS = 30000;
 const RESPONSE_HEADROOM_MS = 1200;
 const MIN_STAGE_TIMEOUT_MS = 1500;
 const DEFAULT_LOCAL_ORIGINS = [
@@ -78,6 +78,10 @@ function parsePositiveInt(rawValue, fallback) {
 const FUNCTION_TIMEOUT_MS = parsePositiveInt(
   process.env.FUNCTION_TIMEOUT_MS || process.env.VERCEL_FUNCTION_TIMEOUT_MS,
   DEFAULT_FUNCTION_TIMEOUT_MS
+);
+const OPENROUTER_TIMEOUT_MS = parsePositiveInt(
+  process.env.OPENROUTER_TIMEOUT_MS,
+  DEFAULT_OPENROUTER_TIMEOUT_MS
 );
 const FUNCTION_BUDGET_MS = Math.max(
   FUNCTION_TIMEOUT_MS - RESPONSE_HEADROOM_MS,
@@ -970,7 +974,17 @@ function extractOpenRouterErrorMessage(data, status, model) {
 }
 
 function shouldRetryOpenRouterError(error) {
-  return OPENROUTER_RETRYABLE_STATUSES.has(Number(error?.status));
+  return (
+    OPENROUTER_RETRYABLE_STATUSES.has(Number(error?.status)) ||
+    isAbortLikeError(error)
+  );
+}
+
+function isAbortLikeError(error) {
+  return (
+    error?.name === "AbortError" ||
+    /aborted|timeout/i.test(String(error?.message || ""))
+  );
 }
 
 function buildTransientProviderMessage(lastError, attemptedModels) {
@@ -1016,19 +1030,32 @@ async function sendOpenRouterRequest(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  const response = await fetch(OPENROUTER_API_URL, {
-    method: "POST",
-    headers: buildOpenRouterHeaders(origin),
-    signal: controller.signal,
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      temperature: 0.2,
-    }),
-  }).finally(() => {
+  let response;
+
+  try {
+    response = await fetch(OPENROUTER_API_URL, {
+      method: "POST",
+      headers: buildOpenRouterHeaders(origin),
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        temperature: 0.2,
+      }),
+    });
+  } catch (error) {
+    if (isAbortLikeError(error)) {
+      throw createHttpError(
+        `[${model}] OpenRouter timeout setelah ${timeoutMs} ms`,
+        504
+      );
+    }
+
+    throw error;
+  } finally {
     clearTimeout(timer);
-  });
+  }
 
   const data = await response.json().catch(() => null);
 
@@ -1194,9 +1221,7 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error("OpenRouter error:", error);
 
-    const isAbortError =
-      error?.name === "AbortError" ||
-      /aborted|timeout/i.test(String(error?.message || ""));
+    const isAbortError = isAbortLikeError(error);
 
     const status = error?.status || (isAbortError ? 504 : 500);
 
