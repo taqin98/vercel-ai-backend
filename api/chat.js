@@ -948,6 +948,35 @@ function extractReplyText(payload) {
   return "";
 }
 
+function extractOpenRouterErrorDetail(payload, status) {
+  const directCandidates = [
+    payload?.error?.message,
+    payload?.error?.detail,
+    payload?.error?.metadata?.raw,
+    payload?.error?.metadata?.provider_name,
+    payload?.message,
+    payload?.detail,
+    typeof payload?.error === "string" ? payload.error : "",
+  ];
+
+  for (const value of directCandidates) {
+    const safe = sanitizeContent(value);
+    if (safe) return safe;
+  }
+
+  if (Array.isArray(payload?.errors)) {
+    for (const item of payload.errors) {
+      const safe =
+        sanitizeContent(item?.message) ||
+        sanitizeContent(item?.detail) ||
+        sanitizeContent(typeof item === "string" ? item : "");
+      if (safe) return safe;
+    }
+  }
+
+  return `OpenRouter request failed with HTTP ${status}`;
+}
+
 async function sendOpenRouterChat(
   messages,
   origin,
@@ -973,10 +1002,7 @@ async function sendOpenRouterChat(
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    const detail =
-      data?.error?.message ||
-      data?.message ||
-      `OpenRouter request failed with HTTP ${response.status}`;
+    const detail = extractOpenRouterErrorDetail(data, response.status);
     throw createHttpError(detail, response.status);
   }
 
