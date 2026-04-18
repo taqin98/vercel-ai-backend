@@ -16,7 +16,7 @@ const MAX_CONTEXT_ITEMS = 6;
 const MAX_KNOWLEDGE_ITEMS = 8;
 const MAX_CONTEXT_FIELDS = 24;
 const MAX_DATASET_FIELD_ITEMS = 8;
-const DATA_SOURCE_TIMEOUT_MS = 8000;
+const DEFAULT_DATA_SOURCE_TIMEOUT_MS = 12000;
 const DATA_SOURCE_CACHE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_OPENROUTER_TIMEOUT_MS = 20000;
 const OPENROUTER_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
@@ -82,6 +82,10 @@ const FUNCTION_TIMEOUT_MS = parsePositiveInt(
 const OPENROUTER_TIMEOUT_MS = parsePositiveInt(
   process.env.OPENROUTER_TIMEOUT_MS,
   DEFAULT_OPENROUTER_TIMEOUT_MS
+);
+const DATA_SOURCE_TIMEOUT_MS = parsePositiveInt(
+  process.env.DATA_SOURCE_TIMEOUT_MS,
+  DEFAULT_DATA_SOURCE_TIMEOUT_MS
 );
 const FUNCTION_BUDGET_MS = Math.max(
   FUNCTION_TIMEOUT_MS - RESPONSE_HEADROOM_MS,
@@ -904,12 +908,25 @@ function buildPageContextMessage(context) {
   };
 }
 
+function buildKnowledgeWarningMessage(context) {
+  const warning = context?.knowledgeWarning;
+  if (!warning?.unavailable) return null;
+
+  return {
+    role: "system",
+    content: `Knowledge base situs tidak tersedia untuk request ini. Jangan mengklaim jawaban berasal dari dataset situs. Jika user meminta data spesifik dari situs, katakan sumber data situs sedang tidak bisa diakses. Detail teknis: ${JSON.stringify(
+      warning
+    )}`,
+  };
+}
+
 function buildMessages(message, history, context) {
   const knowledgeInstructionMessage = buildKnowledgeInstructionMessage(
     message,
     context
   );
   const knowledgeContextMessage = buildKnowledgeContextMessage(context);
+  const knowledgeWarningMessage = buildKnowledgeWarningMessage(context);
   const pageContextMessage = buildPageContextMessage(context);
 
   return [
@@ -919,6 +936,7 @@ function buildMessages(message, history, context) {
     },
     ...(knowledgeInstructionMessage ? [knowledgeInstructionMessage] : []),
     ...(knowledgeContextMessage ? [knowledgeContextMessage] : []),
+    ...(knowledgeWarningMessage ? [knowledgeWarningMessage] : []),
     ...(pageContextMessage ? [pageContextMessage] : []),
     ...history,
     {
@@ -998,6 +1016,48 @@ function buildTransientProviderMessage(lastError, attemptedModels) {
     suffix +
     (lastError?.message ? ` Detail terakhir: ${lastError.message}` : "")
   );
+}
+
+function summarizeKnowledgeBaseError(error, timeoutMs, dataSource) {
+  const status = Number(error?.status) || 502;
+  const detail =
+    sanitizeContent(error?.message || "") ||
+    `Gagal memuat knowledge base dari ${dataSource?.url || "sumber data"}.`;
+
+  return {
+    source: dataSource?.url || "",
+    unavailable: true,
+    status,
+    timeoutMs,
+    detail,
+  };
+}
+
+async function tryBuildKnowledgeBase(message, context, dataSource, timeoutMs) {
+  if (!dataSource) {
+    return {
+      knowledgeBase: null,
+      knowledgeWarning: null,
+    };
+  }
+
+  try {
+    return {
+      knowledgeBase: await buildKnowledgeBase(
+        message,
+        context,
+        dataSource,
+        timeoutMs
+      ),
+      knowledgeWarning: null,
+    };
+  } catch (error) {
+    console.warn("Knowledge source unavailable:", error);
+    return {
+      knowledgeBase: null,
+      knowledgeWarning: summarizeKnowledgeBaseError(error, timeoutMs, dataSource),
+    };
+  }
 }
 
 function extractReplyText(payload) {
@@ -1183,27 +1243,20 @@ export default async function handler(req, res) {
       DATA_SOURCE_TIMEOUT_MS,
       getRemainingBudgetMs(startedAtMs)
     );
+    const { knowledgeBase, knowledgeWarning } = await tryBuildKnowledgeBase(
+      trimmedMessage,
+      safeContext,
+      safeDataSource,
+      dataSourceTimeoutMs
+    );
     const finalContext =
-      safeDataSource && safeContext
+      safeContext || knowledgeBase || knowledgeWarning
         ? {
-            ...safeContext,
-            knowledgeBase: await buildKnowledgeBase(
-              trimmedMessage,
-              safeContext,
-              safeDataSource,
-              dataSourceTimeoutMs
-            ),
+            ...(safeContext || {}),
+            ...(knowledgeBase ? { knowledgeBase } : {}),
+            ...(knowledgeWarning ? { knowledgeWarning } : {}),
           }
-        : safeDataSource
-        ? {
-            knowledgeBase: await buildKnowledgeBase(
-              trimmedMessage,
-              null,
-              safeDataSource,
-              dataSourceTimeoutMs
-            ),
-          }
-        : safeContext;
+        : null;
 
     const messages = buildMessages(trimmedMessage, safeHistory, finalContext);
     const openRouterTimeoutMs = clampStageTimeout(
@@ -1217,6 +1270,8 @@ export default async function handler(req, res) {
       model: result.model || DEFAULT_MODEL,
       provider: "openrouter",
       knowledgeSource: safeDataSource?.url || "",
+      knowledgeSourceStatus: knowledgeWarning?.unavailable ? "unavailable" : "ok",
+      ...(knowledgeWarning ? { knowledgeWarning } : {}),
     });
   } catch (error) {
     console.error("OpenRouter error:", error);
