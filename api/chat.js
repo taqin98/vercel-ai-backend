@@ -1011,6 +1011,10 @@ function shouldRetryOpenRouterError(error) {
   );
 }
 
+function isRateLimitError(error) {
+  return Number(error?.status) === 429;
+}
+
 function isAbortLikeError(error) {
   return (
     error?.name === "AbortError" ||
@@ -1023,6 +1027,14 @@ function buildTransientProviderMessage(lastError, attemptedModels) {
   const suffix = modelsText
     ? ` Model yang dicoba: ${modelsText}.`
     : "";
+
+  if (isRateLimitError(lastError)) {
+    return (
+      "Provider AI sedang kena rate limit atau kuota model gratis sedang penuh. Coba lagi beberapa saat lagi, atau ganti ke model OpenRouter lain di environment backend." +
+      suffix +
+      (lastError?.message ? ` Detail terakhir: ${lastError.message}` : "")
+    );
+  }
 
   return (
     "Provider AI sementara tidak tersedia atau sedang sibuk. Coba lagi beberapa saat lagi, atau ganti model OpenRouter di environment backend." +
@@ -1278,7 +1290,10 @@ async function sendOpenRouterChat(
         }
 
         const hasNextModel = index < modelCandidates.length - 1;
-        const shouldRetrySameModel = modelCandidates.length === 1 && attempt < maxAttempts;
+        const shouldRetrySameModel =
+          modelCandidates.length === 1 &&
+          attempt < maxAttempts &&
+          !isRateLimitError(error);
 
         if (!hasNextModel && !shouldRetrySameModel) {
           throw createHttpError(
@@ -1384,6 +1399,8 @@ export default async function handler(req, res) {
     return res.status(status).json({
       error: isAbortError
         ? "Provider AI tidak selesai sebelum timeout backend."
+        : status === 429
+        ? "Provider AI sedang kena rate limit atau kuota model penuh."
         : status === 503
         ? "Provider AI sementara tidak tersedia."
         : "Terjadi kesalahan di server.",
