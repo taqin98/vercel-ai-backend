@@ -8,10 +8,12 @@ const MAX_CONTEXT_ITEMS = 6;
 const MAX_KNOWLEDGE_ITEMS = 8;
 const MAX_CONTEXT_FIELDS = 24;
 const MAX_DATASET_FIELD_ITEMS = 8;
-const DATA_SOURCE_TIMEOUT_MS = 12000;
+const DATA_SOURCE_TIMEOUT_MS = 8000;
 const DATA_SOURCE_CACHE_TTL_MS = 10 * 60 * 1000;
-const OPENROUTER_TIMEOUT_MS = 18000;
+const OPENROUTER_TIMEOUT_MS = 14000;
 const MAX_OUTPUT_TOKENS = 500;
+const FUNCTION_BUDGET_MS = 25000;
+const MIN_STAGE_TIMEOUT_MS = 1500;
 const DEFAULT_LOCAL_ORIGINS = [
   "http://localhost",
   "http://localhost:3000",
@@ -498,7 +500,19 @@ async function fetchJsonWithTimeout(url, timeoutMs = DATA_SOURCE_TIMEOUT_MS) {
   }
 }
 
-async function loadKnowledgeDataset(dataSource) {
+function getRemainingBudgetMs(startedAtMs) {
+  return Math.max(FUNCTION_BUDGET_MS - (Date.now() - startedAtMs), 0);
+}
+
+function clampStageTimeout(requestedMs, remainingBudgetMs) {
+  const bounded = Math.min(requestedMs, remainingBudgetMs);
+  return Math.max(Math.floor(bounded), MIN_STAGE_TIMEOUT_MS);
+}
+
+async function loadKnowledgeDataset(
+  dataSource,
+  timeoutMs = DATA_SOURCE_TIMEOUT_MS
+) {
   if (!dataSource?.url) return [];
 
   const now = Date.now();
@@ -507,7 +521,7 @@ async function loadKnowledgeDataset(dataSource) {
     return cached.data;
   }
 
-  const payload = await fetchJsonWithTimeout(dataSource.url);
+  const payload = await fetchJsonWithTimeout(dataSource.url, timeoutMs);
   const dataset = normalizeKnowledgeDataset(payload);
 
   if (dataset.length === 0) {
@@ -697,8 +711,13 @@ function pickKnowledgeItems(items, message, context) {
     .map(({ item }) => summarizeKnowledgeItem(item));
 }
 
-async function buildKnowledgeBase(message, context, dataSource) {
-  const dataset = await loadKnowledgeDataset(dataSource);
+async function buildKnowledgeBase(
+  message,
+  context,
+  dataSource,
+  timeoutMs = DATA_SOURCE_TIMEOUT_MS
+) {
+  const dataset = await loadKnowledgeDataset(dataSource, timeoutMs);
   const queryTerms = buildQueryTerms(message, context);
   const pickedItems = pickKnowledgeItems(dataset, message, context);
   const pickedSummaryItems = pickedItems.map((item) => ({
@@ -929,9 +948,13 @@ function extractReplyText(payload) {
   return "";
 }
 
-async function sendOpenRouterChat(messages, origin) {
+async function sendOpenRouterChat(
+  messages,
+  origin,
+  timeoutMs = OPENROUTER_TIMEOUT_MS
+) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   const response = await fetch(OPENROUTER_API_URL, {
     method: "POST",
@@ -964,6 +987,7 @@ async function sendOpenRouterChat(messages, origin) {
 }
 
 export default async function handler(req, res) {
+  const startedAtMs = Date.now();
   const corsOk = setCorsHeaders(req, res);
   const origin = req.headers.origin || "";
 
@@ -1003,6 +1027,10 @@ export default async function handler(req, res) {
     const safeHistory = sanitizeHistory(history);
     const safeContext = sanitizeContext(context);
     const safeDataSource = sanitizeDataSource(dataSource);
+    const dataSourceTimeoutMs = clampStageTimeout(
+      DATA_SOURCE_TIMEOUT_MS,
+      getRemainingBudgetMs(startedAtMs)
+    );
     const finalContext =
       safeDataSource && safeContext
         ? {
@@ -1010,7 +1038,8 @@ export default async function handler(req, res) {
             knowledgeBase: await buildKnowledgeBase(
               trimmedMessage,
               safeContext,
-              safeDataSource
+              safeDataSource,
+              dataSourceTimeoutMs
             ),
           }
         : safeDataSource
@@ -1018,13 +1047,18 @@ export default async function handler(req, res) {
             knowledgeBase: await buildKnowledgeBase(
               trimmedMessage,
               null,
-              safeDataSource
+              safeDataSource,
+              dataSourceTimeoutMs
             ),
           }
         : safeContext;
 
     const messages = buildMessages(trimmedMessage, safeHistory, finalContext);
-    const result = await sendOpenRouterChat(messages, origin);
+    const openRouterTimeoutMs = clampStageTimeout(
+      OPENROUTER_TIMEOUT_MS,
+      getRemainingBudgetMs(startedAtMs)
+    );
+    const result = await sendOpenRouterChat(messages, origin, openRouterTimeoutMs);
 
     return res.status(200).json({
       reply: result.reply || "",
@@ -1044,7 +1078,7 @@ export default async function handler(req, res) {
         ? "Backend kehabisan waktu saat menunggu respons."
         : "Terjadi kesalahan di server.",
       detail: isAbortError
-        ? `Permintaan tidak selesai dalam ${OPENROUTER_TIMEOUT_MS} ms.`
+        ? `Permintaan tidak selesai sebelum batas waktu proses Vercel habis (maks. ${FUNCTION_BUDGET_MS} ms).`
         : error?.message || "Unknown error",
       provider: "openrouter",
     });
