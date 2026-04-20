@@ -28,7 +28,7 @@ vercel-ai-backend/
 - `DATA_SOURCE_TIMEOUT_MS`
   Opsional. Timeout fetch dataset situs dalam milidetik. Default `12000` ms. Jika sumber data gagal atau lambat, backend akan lanjut ke OpenRouter tanpa knowledge base situs dan menandai respons bahwa knowledge source sedang unavailable.
 - `OPENROUTER_MAX_TOKENS`
-  Opsional. Batas panjang jawaban model. Default `220` untuk menjaga latensi tetap muat di runtime Vercel.
+  Opsional. Batas panjang jawaban model. Default kode `360`. Jika balasan masih terasa kepotong, mulai dari `900` di environment lalu sesuaikan lagi berdasarkan latency model yang dipakai.
 - `OPENROUTER_SITE_URL`
   Disarankan isi URL situs GitHub Pages Anda untuk header `HTTP-Referer`.
 - `OPENROUTER_APP_NAME`
