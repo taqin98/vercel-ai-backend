@@ -22,7 +22,8 @@ const DEFAULT_OPENROUTER_TIMEOUT_MS = 90000;
 const OPENROUTER_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 const OPENROUTER_RETRY_DELAY_MS = 600;
 const DEFAULT_OPENROUTER_MAX_TOKENS = 900;
-const CONTINUATION_MAX_TOKENS = 280;
+const DEFAULT_CONTINUATION_MAX_TOKENS = 320;
+const DEFAULT_CONTINUATION_ROUNDS = 4;
 const DEFAULT_FUNCTION_TIMEOUT_MS = 300000;
 const RESPONSE_HEADROOM_MS = 1200;
 const MIN_STAGE_TIMEOUT_MS = 1500;
@@ -91,6 +92,14 @@ const DATA_SOURCE_TIMEOUT_MS = parsePositiveInt(
 const MAX_OUTPUT_TOKENS = parsePositiveInt(
   process.env.OPENROUTER_MAX_TOKENS,
   DEFAULT_OPENROUTER_MAX_TOKENS
+);
+const CONTINUATION_MAX_TOKENS = parsePositiveInt(
+  process.env.OPENROUTER_CONTINUATION_MAX_TOKENS,
+  DEFAULT_CONTINUATION_MAX_TOKENS
+);
+const MAX_CONTINUATION_ROUNDS = parsePositiveInt(
+  process.env.OPENROUTER_CONTINUATION_ROUNDS,
+  DEFAULT_CONTINUATION_ROUNDS
 );
 const FUNCTION_BUDGET_MS = Math.max(
   FUNCTION_TIMEOUT_MS - RESPONSE_HEADROOM_MS,
@@ -1154,6 +1163,66 @@ function buildContinuationMessages(messages, partialReply) {
   ];
 }
 
+async function continueOpenRouterReply(
+  messages,
+  origin,
+  model,
+  initialResult,
+  timeoutMs
+) {
+  let mergedReply = initialResult.reply;
+  let latestReply = initialResult.reply;
+  let finishReason = initialResult.finishReason;
+  const startedAtMs = Date.now();
+
+  for (
+    let round = 1;
+    round <= MAX_CONTINUATION_ROUNDS &&
+    shouldContinueReply(latestReply, finishReason);
+    round += 1
+  ) {
+    const elapsedMs = Date.now() - startedAtMs;
+    const remainingTimeoutMs = Math.max(timeoutMs - elapsedMs, 0);
+    const roundsLeft = MAX_CONTINUATION_ROUNDS - round + 1;
+
+    if (remainingTimeoutMs < MIN_STAGE_TIMEOUT_MS) {
+      break;
+    }
+
+    const continuationTimeoutMs = Math.max(
+      MIN_STAGE_TIMEOUT_MS,
+      Math.floor(remainingTimeoutMs / roundsLeft)
+    );
+
+    try {
+      const continuationResult = await sendOpenRouterRequest(
+        buildContinuationMessages(messages, mergedReply),
+        origin,
+        model,
+        continuationTimeoutMs,
+        CONTINUATION_MAX_TOKENS
+      );
+
+      if (!continuationResult.reply) {
+        break;
+      }
+
+      mergedReply = mergeReplyParts(mergedReply, continuationResult.reply);
+      latestReply = continuationResult.reply;
+      finishReason = continuationResult.finishReason || finishReason;
+    } catch (continuationError) {
+      console.warn("OpenRouter continuation failed:", continuationError);
+      break;
+    }
+  }
+
+  return {
+    ...initialResult,
+    reply: mergedReply,
+    finishReason,
+  };
+}
+
 async function sendOpenRouterRequest(
   messages,
   origin,
@@ -1242,6 +1311,7 @@ async function sendOpenRouterChat(
       );
 
       try {
+        const requestStartedAtMs = Date.now();
         const initialResult = await sendOpenRouterRequest(
           messages,
           origin,
@@ -1253,32 +1323,22 @@ async function sendOpenRouterChat(
           shouldContinueReply(initialResult.reply, initialResult.finishReason) &&
           perAttemptTimeoutMs >= MIN_STAGE_TIMEOUT_MS * 2
         ) {
-          const continuationTimeoutMs = Math.max(
-            MIN_STAGE_TIMEOUT_MS,
-            Math.floor(perAttemptTimeoutMs * 0.35)
+          const continuationBudgetMs = Math.max(
+            0,
+            perAttemptTimeoutMs - (Date.now() - requestStartedAtMs)
           );
 
-          try {
-            const continuationResult = await sendOpenRouterRequest(
-              buildContinuationMessages(messages, initialResult.reply),
-              origin,
-              model,
-              continuationTimeoutMs,
-              CONTINUATION_MAX_TOKENS
-            );
-
-            return {
-              ...initialResult,
-              reply: mergeReplyParts(
-                initialResult.reply,
-                continuationResult.reply
-              ),
-              finishReason:
-                continuationResult.finishReason || initialResult.finishReason,
-            };
-          } catch (continuationError) {
-            console.warn("OpenRouter continuation failed:", continuationError);
+          if (continuationBudgetMs < MIN_STAGE_TIMEOUT_MS) {
+            return initialResult;
           }
+
+          return await continueOpenRouterReply(
+            messages,
+            origin,
+            model,
+            initialResult,
+            continuationBudgetMs
+          );
         }
 
         return initialResult;
