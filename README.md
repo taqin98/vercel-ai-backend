@@ -40,6 +40,19 @@ vercel-ai-backend/
 - `ALLOWED_ORIGINS`
   Pisahkan dengan koma, contoh:
   `https://taqinjunior56.github.io,https://taqinjunior56.github.io/ai-web,http://localhost:4173,http://127.0.0.1:4173`
+- `AUTH_JWT_SECRET`
+  Secret untuk menandatangani session token auth.
+- `AUTH_TOKEN_TTL_SEC`
+  Opsional. Default `604800` detik atau 7 hari.
+- `AUTH_USERS_JSON`
+  JSON array user lokal untuk login password. Contoh:
+  `[{"username":"admin","password":"toga123","displayName":"Admin TOGA","role":"editor"}]`
+- `APPS_SCRIPT_API_URL`
+  URL deploy Web App Google Apps Script untuk data kalender/sheet.
+- `GOOGLE_CLIENT_ID`
+  Google Web Client ID untuk verifikasi Google Sign-In.
+- `AUTH_ALLOWED_GOOGLE_EMAILS`
+  Opsional. Daftar email Google yang diizinkan, dipisah koma.
 
 Catatan:
 - Backend ini juga otomatis mengizinkan origin lokal umum seperti `http://localhost:4173`, `http://localhost:5173`, `http://127.0.0.1:4173`, dan `http://127.0.0.1:5173`.
@@ -78,6 +91,30 @@ npm run check
 
 `GET /api/image-proxy?url=<encoded-image-url>`
 
+`POST /api/auth/login`
+
+`POST /api/auth/google`
+
+`GET /api/auth/session`
+
+`POST /api/auth/logout`
+
+`GET /api/schedule/events?from=YYYY-MM-DD&to=YYYY-MM-DD`
+
+`POST /api/schedule/events`
+
+`PUT /api/schedule/events`
+
+`DELETE /api/schedule/events?id=EVENT_ID`
+
+`GET /api/schedule/labels`
+
+`POST /api/schedule/labels`
+
+`PUT /api/schedule/labels`
+
+`DELETE /api/schedule/labels?id=LABEL_ID`
+
 Catatan `image-proxy`:
 - Dipakai untuk me-render thumbnail Google Drive sebagai texture A-Frame / WebGL tanpa mentok CORS browser.
 - Host upstream dibatasi ke domain Google Drive / Googleusercontent yang relevan.
@@ -94,6 +131,54 @@ Body:
   ]
 }
 ```
+
+Body login password:
+
+```json
+{
+  "username": "admin",
+  "password": "toga123"
+}
+```
+
+Respons auth:
+
+```json
+{
+  "ok": true,
+  "token": "jwt-session-token",
+  "user": {
+    "id": "admin",
+    "username": "admin",
+    "displayName": "Admin TOGA",
+    "role": "editor",
+    "provider": "password"
+  }
+}
+```
+
+Contoh body create/update event:
+
+```json
+{
+  "title": "Kerja Bakti",
+  "start_date": "2026-04-21",
+  "start_time": "08:00",
+  "end_date": "2026-04-21",
+  "end_time": "10:00",
+  "all_day": "0",
+  "label_id": "LBL-GREEN",
+  "label_name": "Kebun",
+  "label_color": "#43A047",
+  "location": "Kebun RT 09",
+  "notes": "Bawa alat kebersihan"
+}
+```
+
+Catatan jadwal:
+- `GET /api/schedule/*` bisa dipakai tanpa login untuk mode baca.
+- `POST/PUT/DELETE /api/schedule/*` wajib header `Authorization: Bearer <token>` dari hasil login.
+- Backend ini meneruskan operasi ke Google Apps Script, jadi frontend tidak lagi perlu menulis langsung ke Apps Script.
 
 Respons:
 

@@ -5,6 +5,24 @@
     },
     "api/image-proxy.js": {
       "maxDuration": 300
+    },
+    "api/auth/login.js": {
+      "maxDuration": 30
+    },
+    "api/auth/google.js": {
+      "maxDuration": 30
+    },
+    "api/auth/session.js": {
+      "maxDuration": 30
+    },
+    "api/auth/logout.js": {
+      "maxDuration": 30
+    },
+    "api/schedule/events.js": {
+      "maxDuration": 30
+    },
+    "api/schedule/labels.js": {
+      "maxDuration": 30
     }
   }
 }
