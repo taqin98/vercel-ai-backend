@@ -3,6 +3,7 @@ import {
   createHttpError,
   handleOptions,
   parseJsonBody,
+  recordLoginEvent,
   sendError,
   setCorsHeaders,
   verifyGoogleCredential,
@@ -25,6 +26,7 @@ export default async function handler(req, res) {
 
     const user = await verifyGoogleCredential(credential);
     const session = buildSession(user);
+    await recordLoginEvent(req, session.user);
     return res.status(200).json({
       ok: true,
       token: session.token,

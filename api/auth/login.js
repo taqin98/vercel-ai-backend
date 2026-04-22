@@ -4,6 +4,7 @@ import {
   createHttpError,
   handleOptions,
   parseJsonBody,
+  recordLoginEvent,
   sendError,
   setCorsHeaders,
 } from "../_auth.js";
@@ -27,6 +28,7 @@ export default async function handler(req, res) {
 
     const user = authenticatePassword(username, password);
     const session = buildSession(user);
+    await recordLoginEvent(req, session.user);
     return res.status(200).json({
       ok: true,
       token: session.token,

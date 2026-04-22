@@ -12,6 +12,7 @@ const DEFAULT_LOCAL_ORIGINS = [
 ];
 
 const TOKEN_VERIFY_TIMEOUT_MS = 10000;
+const APPS_SCRIPT_WRITE_TIMEOUT_MS = 10000;
 const DEFAULT_TOKEN_TTL_SEC = 60 * 60 * 24 * 7;
 
 function parseAllowedOrigins(rawValue) {
@@ -93,6 +94,7 @@ function parseAuthUsers() {
         return {
           username,
           password,
+          email: String(item.email || "").trim().toLowerCase(),
           displayName:
             String(item.displayName || item.name || username).trim() || username,
           role: String(item.role || "editor").trim() || "editor",
@@ -124,6 +126,7 @@ export function authenticatePassword(username, password) {
   return {
     id: matched.username,
     username: matched.username,
+    email: matched.email,
     displayName: matched.displayName,
     role: matched.role,
     provider: "password",
@@ -245,6 +248,81 @@ export function buildSession(user) {
       loginAt: Date.now(),
     },
   };
+}
+
+async function appendLoginLogToAppsScript(payload) {
+  const apiUrl = String(process.env.APPS_SCRIPT_API_URL || "").trim();
+  if (!apiUrl) return false;
+  const secret = String(process.env.APPS_SCRIPT_SHARED_SECRET || "").trim();
+  if (!secret) {
+    throw new Error("APPS_SCRIPT_SHARED_SECRET belum diatur di backend.");
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), APPS_SCRIPT_WRITE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "text/plain;charset=utf-8",
+      },
+      body: JSON.stringify({
+        action: "appendLoginLog",
+        secret,
+        payload,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Apps Script HTTP ${response.status}`);
+    }
+
+    let data = {};
+    try {
+      data = await response.json();
+    } catch (_) {}
+
+    if (data && data.ok === false) {
+      throw new Error(String(data.error || "Apps Script menolak appendLoginLog."));
+    }
+
+    return true;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function recordLoginEvent(req, sessionUser) {
+  const forwardedFor = String(req?.headers?.["x-forwarded-for"] || "")
+    .split(",")[0]
+    .trim();
+  const realIp = String(req?.headers?.["x-real-ip"] || "").trim();
+  const userAgent = String(req?.headers?.["user-agent"] || "").trim();
+  const loginAt = Number(sessionUser?.loginAt || Date.now()) || Date.now();
+
+  const payload = {
+    event: "auth_login_success",
+    timestamp_login: new Date(loginAt).toISOString(),
+    provider: String(sessionUser?.provider || "").trim(),
+    user_id: String(sessionUser?.id || "").trim(),
+    username: String(sessionUser?.username || "").trim(),
+    email: String(sessionUser?.email || "").trim(),
+    display_name: String(sessionUser?.displayName || "").trim(),
+    role: String(sessionUser?.role || "").trim(),
+    ip: forwardedFor || realIp,
+    user_agent: userAgent,
+  };
+
+  console.info("[auth]", JSON.stringify(payload));
+  try {
+    await appendLoginLogToAppsScript(payload);
+  } catch (error) {
+    console.warn("[auth] appendLoginLog failed:", String(error?.message || error));
+  }
+  return payload;
 }
 
 export function getBearerToken(req) {

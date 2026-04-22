@@ -46,13 +46,29 @@ vercel-ai-backend/
   Opsional. Default `604800` detik atau 7 hari.
 - `AUTH_USERS_JSON`
   JSON array user lokal untuk login password. Contoh:
-  `[{"username":"admin","password":"toga123","displayName":"Admin TOGA","role":"editor"}]`
+  `[{"username":"admin","password":"toga123","email":"admin@domain.com","displayName":"Admin TOGA","role":"editor"}]`
 - `APPS_SCRIPT_API_URL`
   URL deploy Web App Google Apps Script untuk data kalender/sheet.
+- `APPS_SCRIPT_SHARED_SECRET`
+  Secret backend untuk action Apps Script yang dilindungi.
+  Nilainya harus sama dengan Script Property `APPS_SCRIPT_SHARED_SECRET` di project Apps Script.
 - `GOOGLE_CLIENT_ID`
   Google Web Client ID untuk verifikasi Google Sign-In.
 - `AUTH_ALLOWED_GOOGLE_EMAILS`
   Opsional. Daftar email Google yang diizinkan, dipisah koma.
+  Contoh: `admin@gmail.com,editor@domain.com`
+  Jika dikosongkan, semua email Google terverifikasi dengan `aud` yang cocok akan diterima.
+
+- Log login sukses
+  Setiap login berhasil sekarang dicatat ke runtime log backend/Vercel dengan field:
+  `display_name`, `email`, `username`, `provider`, `timestamp_login`, `role`, `ip`, `user_agent`.
+  Jika `APPS_SCRIPT_API_URL` diisi dan Apps Script sudah diperbarui, log yang sama juga akan dikirim ke Google Sheet lewat action `appendLoginLog` pada sheet `LoginLogs`.
+  Jika Apps Script belum diperbarui, login tetap berhasil dan backend hanya menulis warning di log.
+  Untuk mengamankan endpoint log:
+  1. Set `APPS_SCRIPT_SHARED_SECRET` di backend `.env` / Vercel Environment Variables.
+  2. Buka Apps Script -> Project Settings -> Script Properties.
+  3. Tambahkan property `APPS_SCRIPT_SHARED_SECRET` dengan nilai yang sama.
+  4. Redeploy Web App Apps Script setelah kodenya diperbarui.
 
 Catatan:
 - Backend ini juga otomatis mengizinkan origin lokal umum seperti `http://localhost:4173`, `http://localhost:5173`, `http://127.0.0.1:4173`, dan `http://127.0.0.1:5173`.
