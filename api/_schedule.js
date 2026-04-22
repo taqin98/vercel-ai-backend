@@ -1,6 +1,7 @@
 import {
   createHttpError,
   getBearerToken,
+  getAppsScriptSharedSecret,
   setCorsHeaders,
   verifySessionToken,
 } from "./_auth.js";
@@ -80,6 +81,7 @@ export async function getScheduleLabels() {
 }
 
 export async function mutateSchedule(action, payload) {
+  const secret = getAppsScriptSharedSecret();
   return fetchAppsScript(getAppsScriptApiUrl(), {
     method: "POST",
     headers: {
@@ -87,6 +89,7 @@ export async function mutateSchedule(action, payload) {
     },
     body: JSON.stringify({
       action,
+      secret,
       payload,
     }),
   });

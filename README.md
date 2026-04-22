@@ -63,12 +63,18 @@ vercel-ai-backend/
   Setiap login berhasil sekarang dicatat ke runtime log backend/Vercel dengan field:
   `display_name`, `email`, `username`, `provider`, `timestamp_login`, `role`, `ip`, `user_agent`.
   Jika `APPS_SCRIPT_API_URL` diisi dan Apps Script sudah diperbarui, log yang sama juga akan dikirim ke Google Sheet lewat action `appendLoginLog` pada sheet `LoginLogs`.
+  `timestamp_login` disimpan dalam timezone `Asia/Jakarta` (`GMT+7`).
   Jika Apps Script belum diperbarui, login tetap berhasil dan backend hanya menulis warning di log.
   Untuk mengamankan endpoint log:
   1. Set `APPS_SCRIPT_SHARED_SECRET` di backend `.env` / Vercel Environment Variables.
   2. Buka Apps Script -> Project Settings -> Script Properties.
   3. Tambahkan property `APPS_SCRIPT_SHARED_SECRET` dengan nilai yang sama.
   4. Redeploy Web App Apps Script setelah kodenya diperbarui.
+
+- Proteksi action tulis Apps Script
+  Action POST berikut sekarang wajib secret yang sama:
+  `createEvent`, `updateEvent`, `deleteEvent`, `upsertLabel`, `deleteLabel`, `appendLoginLog`.
+  Frontend jadwal tidak lagi fallback POST langsung ke Apps Script; semua aksi tulis harus lewat backend `/api/schedule/*`.
 
 Catatan:
 - Backend ini juga otomatis mengizinkan origin lokal umum seperti `http://localhost:4173`, `http://localhost:5173`, `http://127.0.0.1:4173`, dan `http://127.0.0.1:5173`.

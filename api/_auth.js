@@ -141,6 +141,14 @@ function getAuthSecret() {
   return secret;
 }
 
+export function getAppsScriptSharedSecret() {
+  const secret = String(process.env.APPS_SCRIPT_SHARED_SECRET || "").trim();
+  if (!secret) {
+    throw createHttpError("APPS_SCRIPT_SHARED_SECRET belum diatur di backend.", 500);
+  }
+  return secret;
+}
+
 function base64UrlEncode(input) {
   const buffer = Buffer.isBuffer(input) ? input : Buffer.from(String(input), "utf8");
   return buffer
@@ -253,10 +261,7 @@ export function buildSession(user) {
 async function appendLoginLogToAppsScript(payload) {
   const apiUrl = String(process.env.APPS_SCRIPT_API_URL || "").trim();
   if (!apiUrl) return false;
-  const secret = String(process.env.APPS_SCRIPT_SHARED_SECRET || "").trim();
-  if (!secret) {
-    throw new Error("APPS_SCRIPT_SHARED_SECRET belum diatur di backend.");
-  }
+  const secret = getAppsScriptSharedSecret();
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), APPS_SCRIPT_WRITE_TIMEOUT_MS);
