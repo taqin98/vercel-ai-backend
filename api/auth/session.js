@@ -5,6 +5,7 @@ import {
   sendError,
   setCorsHeaders,
   verifySessionToken,
+  withProxiedUserAvatar,
 } from "../_auth.js";
 
 export default async function handler(req, res) {
@@ -20,7 +21,7 @@ export default async function handler(req, res) {
     const user = verifySessionToken(token);
     return res.status(200).json({
       ok: true,
-      user,
+      user: withProxiedUserAvatar(req, user),
     });
   } catch (error) {
     return sendError(res, error);

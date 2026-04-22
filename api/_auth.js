@@ -14,6 +14,13 @@ const DEFAULT_LOCAL_ORIGINS = [
 const TOKEN_VERIFY_TIMEOUT_MS = 10000;
 const APPS_SCRIPT_WRITE_TIMEOUT_MS = 10000;
 const DEFAULT_TOKEN_TTL_SEC = 60 * 60 * 24 * 7;
+const PROXIED_AVATAR_HOSTS = new Set([
+  "lh3.googleusercontent.com",
+  "googleusercontent.com",
+  "drive.google.com",
+  "docs.google.com",
+  "drive.usercontent.google.com",
+]);
 
 function parseAllowedOrigins(rawValue) {
   const configuredOrigins = String(rawValue || "")
@@ -76,6 +83,63 @@ export function parseJsonBody(req) {
 function parsePositiveInt(value, fallback) {
   const parsed = Number.parseInt(String(value || ""), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function buildRequestOrigin(req) {
+  const forwardedProto = String(req?.headers?.["x-forwarded-proto"] || "").trim();
+  const host = String(req?.headers?.host || "").trim();
+  if (forwardedProto && host) {
+    return `${forwardedProto}://${host}`;
+  }
+
+  const vercelUrl = String(process.env.VERCEL_URL || "").trim();
+  if (vercelUrl) {
+    return `https://${vercelUrl}`;
+  }
+
+  return host ? `http://${host}` : "";
+}
+
+function isHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || "").trim());
+}
+
+function shouldProxyAvatarUrl(value) {
+  const rawUrl = String(value || "").trim();
+  if (!rawUrl || !isHttpUrl(rawUrl)) return false;
+
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    for (const allowedHost of PROXIED_AVATAR_HOSTS) {
+      if (host === allowedHost || host.endsWith(`.${allowedHost}`)) {
+        return true;
+      }
+    }
+  } catch (_) {
+    return false;
+  }
+
+  return false;
+}
+
+export function withProxiedUserAvatar(req, user) {
+  if (!user || typeof user !== "object") return user;
+
+  const avatar = String(user.avatar || "").trim();
+  if (!shouldProxyAvatarUrl(avatar)) {
+    return user;
+  }
+
+  const origin = buildRequestOrigin(req);
+  if (!origin) {
+    return user;
+  }
+
+  return {
+    ...user,
+    avatar: `${origin}/api/image-proxy?url=${encodeURIComponent(avatar)}`,
+  };
 }
 
 function parseAuthUsers() {

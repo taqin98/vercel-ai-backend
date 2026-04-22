@@ -7,6 +7,7 @@ import {
   recordLoginEvent,
   sendError,
   setCorsHeaders,
+  withProxiedUserAvatar,
 } from "../_auth.js";
 
 export default async function handler(req, res) {
@@ -32,7 +33,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       token: session.token,
-      user: session.user,
+      user: withProxiedUserAvatar(req, session.user),
     });
   } catch (error) {
     return sendError(res, error);
