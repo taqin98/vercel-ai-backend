@@ -23,6 +23,21 @@
     },
     "api/schedule/labels.js": {
       "maxDuration": 30
+    },
+    "api/push/register.js": {
+      "maxDuration": 15
+    },
+    "api/push/send-reminders.js": {
+      "maxDuration": 30
+    },
+    "api/push/test.js": {
+      "maxDuration": 30
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/push/send-reminders",
+      "schedule": "* * * * *"
+    }
+  ]
 }

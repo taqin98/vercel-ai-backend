@@ -4,6 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "check": "node --check api/chat.js && node --check api/image-proxy.js && node --check api/_auth.js && node --check api/_schedule.js && node --check api/auth/login.js && node --check api/auth/google.js && node --check api/auth/session.js && node --check api/auth/logout.js && node --check api/schedule/events.js && node --check api/schedule/labels.js"
+    "check": "node --check api/chat.js && node --check api/image-proxy.js && node --check api/_auth.js && node --check api/_schedule.js && node --check api/_firebase.js && node --check api/auth/login.js && node --check api/auth/google.js && node --check api/auth/session.js && node --check api/auth/logout.js && node --check api/schedule/events.js && node --check api/schedule/labels.js && node --check api/push/register.js && node --check api/push/send-reminders.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.8.0"
   }
 }
