@@ -21,15 +21,22 @@ import {
 } from "../_schedule.js";
 
 export default async function handler(req, res) {
-  if (handleScheduleOptions(req, res)) return;
-  setCorsHeaders(req, res);
-
   try {
+    if (handleScheduleOptions(req, res)) return;
+    setCorsHeaders(req, res);
+
     if (req.method !== "POST") {
       throw createHttpError("Method not allowed.", 405);
     }
 
-    const user = requireScheduleAuth(req);
+    let user;
+    try {
+      user = requireScheduleAuth(req);
+    } catch (authError) {
+      console.error("[push/register] Auth failed:", authError?.message || authError);
+      throw createHttpError("Autentikasi gagal: " + String(authError?.message || ""), 401);
+    }
+
     const body = parseJsonBody(req);
     const token = String(body?.token || "").trim();
 
@@ -43,14 +50,23 @@ export default async function handler(req, res) {
     }
 
     // Save token to Google Apps Script
-    await mutateSchedule("registerFcmToken", {
-      user_id: userId,
-      token,
-      created_at: new Date().toISOString(),
-    });
+    try {
+      await mutateSchedule("registerFcmToken", {
+        user_id: userId,
+        token,
+        created_at: new Date().toISOString(),
+      });
+    } catch (scriptError) {
+      console.error("[push/register] Apps Script error:", scriptError?.message || scriptError);
+      throw createHttpError(
+        "Gagal simpan token ke database: " + String(scriptError?.message || ""),
+        502
+      );
+    }
 
     return res.status(200).json({ ok: true, message: "Token terdaftar." });
   } catch (error) {
+    console.error("[push/register] Error:", error?.message || error);
     return sendError(res, error);
   }
 }
