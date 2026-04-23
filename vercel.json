@@ -33,11 +33,5 @@
     "api/push/test.js": {
       "maxDuration": 30
     }
-  },
-  "crons": [
-    {
-      "path": "/api/push/send-reminders",
-      "schedule": "* * * * *"
-    }
-  ]
+  }
 }
